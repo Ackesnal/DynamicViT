@@ -22,7 +22,7 @@ import logging
 from functools import partial
 from collections import OrderedDict
 from copy import Error, deepcopy
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -452,16 +452,11 @@ class VisionTransformerDiffPruning(nn.Module):
                     prev_decision = batch_index_select(prev_decision, keep_policy)
                     x = blk(x)
                     """
-                    
                     perform_x = batch_index_select(x, now_policy) # B, N*ratio, C
-                    prev_decision = batch_index_select(prev_decision, keep_policy)
                     perform_x = blk(perform_x) # B, N*ratio, C
-                    
                     index = torch.arange(B, dtype=keep_policy.dtype, device=keep_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
                     now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
-                    print(now_policy[0])
-                    print(x.shape, perform_x.shape)
-                    x[now_policy.cpu().numpy()] = perform_x.reshape(B*(num_keep_node+1), -1)
+                    x[np.array(now_policy.cpu())] = perform_x.reshape(B*(num_keep_node+1), -1)
                     
                 p_count += 1
             else:
