@@ -308,9 +308,9 @@ class PredictorLG(nn.Module):
         x = self.in_conv(x)
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
+        global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
         x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
-        return self.out_conv(x)
+        return self.out_conv(x)  # B, N, 2
 
 
 class VisionTransformerDiffPruning(nn.Module):
@@ -383,6 +383,7 @@ class VisionTransformerDiffPruning(nn.Module):
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
+        # predictor_list = [PredictorLG(embed_dim) for _ in range(depth)]
 
         self.score_predictor = nn.ModuleList(predictor_list)
 
@@ -439,22 +440,59 @@ class VisionTransformerDiffPruning(nn.Module):
                     cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                     policy = torch.cat([cls_policy, hard_keep_decision], dim=1)
                     x = blk(x, policy=policy)
-                    prev_decision = hard_keep_decision
+                    # prev_decision = hard_keep_decision
                 else:
                     score = pred_score[:,:,0]
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
                     cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                    now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1)
+                    now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
+                    """
                     x = batch_index_select(x, now_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
                     x = blk(x)
+                    """
+                    
+                    perform_x = batch_index_select(x, now_policy) # B, N*ratio, C
+                    prev_decision = batch_index_select(prev_decision, keep_policy)
+                    perform_x = blk(perform_x) # B, N*ratio, C
+                    
+                    index = torch.arange(B, dtype=keep_policy.dtype, device=keep_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+                    now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
+                    print(now_policy[0])
+                    print(x.shape, perform_x.shape)
+                    x[now_policy.cpu().numpy()] = perform_x.reshape(B*(num_keep_node+1), -1)
+                    
                 p_count += 1
             else:
                 if self.training:
                     x = blk(x, policy)
                 else:
                     x = blk(x)
+            """
+            spatial_x = x[:, 1:]
+            pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
+            if self.training:
+                hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision # B, N, 1
+                out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
+                cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device) # B, 1, 1
+                policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
+                x = blk(x, policy=policy)
+            else:
+                hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision
+                cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device) # B, 1, 1
+                policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
+                
+                perform_policy = torch.nonzero(policy).reshape(B, -1, 3) # B*N*ratio, 3 
+                idle_policy = 1 - perform_policy # B, N+1, 1
+                
+                perform_x = batch_index_select(x, perform_policy.squeeze())
+                perform_x = blk(perform_x) # B, N*ratio, C
+                
+                x[] 
+            """  
+                
+        
 
         x = self.norm(x)
         features = x[:, 1:]
