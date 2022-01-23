@@ -303,13 +303,16 @@ class PredictorLG(nn.Module):
             nn.Linear(embed_dim // 4, 2),
             nn.LogSoftmax(dim=-1)
         )
+        
+        self.aggregate = nn.Conv2d(embed_dim//2, embed_dim//2, 3, padding=1)
 
     def forward(self, x, policy):
         x = self.in_conv(x)
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
-        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
+        # global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
+        global_x = self.aggregate(x[:,:, C//2:].reshape(B, int(N**0.5), int(N**0.5), C//2).permute(0,3,1,2)).permute(0,2,3,1).reshape(B, N, C//2)
+        x = torch.cat([local_x, global_x], dim=-1)
         return self.out_conv(x)  # B, N, 2
 
 
@@ -432,31 +435,42 @@ class VisionTransformerDiffPruning(nn.Module):
         policy = torch.ones(B, init_n + 1, 1, dtype=x.dtype, device=x.device)
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
-                spatial_x = x[:, 1:]
-                pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
+                # spatial_x = x[:, 1:]
+                # pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
                 if self.training:
+                    spatial_x = x[:, 1:]
+                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
                     hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision
                     out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
                     cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                     policy = torch.cat([cls_policy, hard_keep_decision], dim=1)
                     x = blk(x, policy=policy)
+                    final_decision = hard_keep_decision
                     # prev_decision = hard_keep_decision
                 else:
+                    if p_count > 0:
+                        # 把idle部分拼回去
+                        index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+                        now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
+                        original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
+                        x = original_x
+                    
+                    spatial_x = x[:, 1:]
+                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
                     score = pred_score[:,:,0]
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
                     cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
                     now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
+                    
+                    original_x = x
+                    x = batch_index_select(x, now_policy) # B, N*ratio, C
+                    x = blk(x)
                     """
                     x = batch_index_select(x, now_policy)
                     prev_decision = batch_index_select(prev_decision, keep_policy)
                     x = blk(x)
                     """
-                    perform_x = batch_index_select(x, now_policy) # B, N*ratio, C
-                    perform_x = blk(perform_x) # B, N*ratio, C
-                    index = torch.arange(B, dtype=keep_policy.dtype, device=keep_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-                    now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
-                    x[np.array(now_policy.cpu())] = perform_x.reshape(B*(num_keep_node+1), -1)
                     
                 p_count += 1
             else:
@@ -464,31 +478,14 @@ class VisionTransformerDiffPruning(nn.Module):
                     x = blk(x, policy)
                 else:
                     x = blk(x)
-            """
-            spatial_x = x[:, 1:]
-            pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
-            if self.training:
-                hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision # B, N, 1
-                out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
-                cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device) # B, 1, 1
-                policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
-                x = blk(x, policy=policy)
-            else:
-                hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision
-                cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device) # B, 1, 1
-                policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
-                
-                perform_policy = torch.nonzero(policy).reshape(B, -1, 3) # B*N*ratio, 3 
-                idle_policy = 1 - perform_policy # B, N+1, 1
-                
-                perform_x = batch_index_select(x, perform_policy.squeeze())
-                perform_x = blk(perform_x) # B, N*ratio, C
-                
-                x[] 
-            """  
-                
         
-
+        if not self.training:
+            # 把idle部分拼回去
+            index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
+            original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
+            x = original_x
+        
         x = self.norm(x)
         features = x[:, 1:]
         x = x[:, 0]
@@ -496,7 +493,8 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, prev_decision.detach(), out_pred_prob
+                # return x, features, prev_decision.detach()final_decision.detach(), out_pred_prob
+                return x, features, final_decision.detach(), out_pred_prob
             else:
                 return x, out_pred_prob
         else:
