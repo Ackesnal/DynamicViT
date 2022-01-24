@@ -310,7 +310,7 @@ class PredictorLG(nn.Module):
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
         global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        global_x = global_x.expand(B, N, C//2) * policy
+        global_x = global_x.expand(B, N, C//2)
         x = torch.cat([local_x, global_x], dim=-1)
         return self.out_conv(x)  # B, N, 2
 
@@ -433,10 +433,11 @@ class VisionTransformerDiffPruning(nn.Module):
         prev_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 记录上一次的选择结果
         std_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 标准选择，即全选
         policy = torch.ones(B, init_n + 1, 1, dtype=x.dtype, device=x.device)
+        pred_score = 0
         for i, blk in enumerate(self.blocks):
             if self.training:
                 spatial_x = x[:, 1:]
-                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
+                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score # B, N, 2
                 
                 # 这一层的训练
                 hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * std_decision
@@ -449,7 +450,7 @@ class VisionTransformerDiffPruning(nn.Module):
                 prev_decision = F.softmax(pred_score[:,:,0:1], dim = 1)
             else:
                 spatial_x = x[:, 1:]
-                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2)
+                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score
                 score = pred_score[:,:,0]
                 num_keep_node = int(init_n * self.token_ratio[i])
                 keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]

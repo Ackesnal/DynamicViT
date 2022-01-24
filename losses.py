@@ -180,7 +180,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             else:
                 pos_ratio = score.mean(1)
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
-
+        
         cls_loss = self.base_criterion(pred, labels)
 
         with torch.no_grad():
@@ -192,15 +192,17 @@ class DistillDiffPruningLoss(torch.nn.Module):
                 reduction='batchmean',
                 log_target=True
             )
-
+        
+        
+        """
         B, N, C = token_pred.size()
         assert mask.numel() == B * N
-
+        
         bool_mask = mask.reshape(B*N) > 0.5
 
         token_pred = token_pred.reshape(B*N, C)
         token_t = token_t.reshape(B*N, C)
-
+        
         if mask.sum() < 0.1:
             token_kl_loss = token_pred.new(1,).fill_(0.0)
         else:
@@ -215,15 +217,16 @@ class DistillDiffPruningLoss(torch.nn.Module):
                         reduction='batchmean',
                         log_target=True
                     )
+        """
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss
+        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.distill_weight * cls_kl_loss # + self.distill_weight * token_kl_loss
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
             self.ratio_loss += pred_loss.item()
             self.cls_distill_loss += cls_kl_loss.item()
-            self.token_distill_loss += token_kl_loss.item()
+            # self.token_distill_loss += token_kl_loss.item()
             self.count += 1
             if self.count == 100:
                 print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cls_kl=%.4f, token_kl=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100))
