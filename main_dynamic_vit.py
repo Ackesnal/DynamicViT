@@ -288,7 +288,11 @@ def main(args):
     KEEP_RATE = [base_rate, base_rate ** 2, base_rate ** 3]
 
     if args.arch == 'deit_small':
-        PRUNING_LOC = [3,6,9] 
+        # PRUNING_LOC = [3,6,9]
+        PRUNING_LOC = [i for i in range(12)] # 每层都加一个predictor
+        KEEP_RATE = []
+        for i in range(4):
+            KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = VisionTransformerDiffPruning(
@@ -499,7 +503,7 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
-        warmup_step = 5
+        warmup_step = 10
         adjust_learning_rate(optimizer.param_groups, args.lr, args.min_lr, epoch, args.epochs, warmup_predictor=False, warming_up_step=warmup_step, base_multi=0.1)
 
         train_stats = train_one_epoch(
