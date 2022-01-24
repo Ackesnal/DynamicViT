@@ -109,7 +109,7 @@ def main(args):
 
     model_path = args.model_path
     checkpoint = torch.load(model_path, map_location="cpu")
-    model.load_state_dict(checkpoint["model"])
+    model.load_state_dict(checkpoint["model"], strict=False)
 
     print('## model has been successfully loaded')
 

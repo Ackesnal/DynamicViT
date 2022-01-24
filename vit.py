@@ -309,6 +309,7 @@ class PredictorLG(nn.Module):
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
         global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
+        # global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
         x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
         return self.out_conv(x)
 
