@@ -304,15 +304,16 @@ class PredictorLG(nn.Module):
             nn.LogSoftmax(dim=-1)
         )
         
-        self.aggregate = nn.Conv2d(embed_dim//2, embed_dim//2, 3, padding=1)
+        # self.aggregate = nn.Conv2d(embed_dim//2, embed_dim//2, 3, padding=1)
 
     def forward(self, x, policy):
         x = self.in_conv(x)
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
-        # global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        global_x = self.aggregate(x[:,:, C//2:].reshape(B, int(N**0.5), int(N**0.5), C//2).permute(0,3,1,2)).permute(0,2,3,1).reshape(B, N, C//2)
-        x = torch.cat([local_x, global_x], dim=-1)
+        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
+        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
+        # global_x = self.aggregate(x[:,:, C//2:].reshape(B, int(N**0.5), int(N**0.5), C//2).permute(0,3,1,2)).permute(0,2,3,1).reshape(B, N, C//2)
+        # x = torch.cat([local_x, global_x], dim=-1)
         return self.out_conv(x)  # B, N, 2
 
 
