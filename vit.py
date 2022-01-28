@@ -289,12 +289,12 @@ class PredictorLG(nn.Module):
     """
     def __init__(self, embed_dim=384):
         super().__init__()
+        """
         self.in_conv = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim),
             nn.GELU()
         )
-
         self.out_conv = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
             nn.GELU(),
@@ -303,16 +303,35 @@ class PredictorLG(nn.Module):
             nn.Linear(embed_dim // 4, 2),
             nn.LogSoftmax(dim=-1)
         )
+        """
+        self.norm = nn.LayerNorm(embed_dim)
+        self.out_conv = nn.Sequential(
+            nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim), #384
+            nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim//3, kernel_size = 1), #128
+            nn.GELU(),
+            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 5, stride = 1, padding = 2, groups = embed_dim//3), #128
+            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1), #128
+            nn.GELU(),
+            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim//3), #128
+            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1), #128
+            nn.GELU(),
+            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//6, kernel_size = 1), #64
+            nn.Conv2d(in_channels = embed_dim//6, out_channels = 2, kernel_size = 1), #2
+            nn.LogSoftmax(dim=1)
+        )
 
     def forward(self, x, policy):
         # policy: B, N, 1
-        x = self.in_conv(x)
+        # x = self.in_conv(x)
+        
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
         global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
         global_x = global_x.expand(B, N, C//2)
         x = torch.cat([local_x, global_x], dim=-1)
-        return self.out_conv(x)  # B, N, 2
+        
+        x = self.norm(x).reshape(B, int(N**0.5), int(N**0.5), C).permute(0,3,1,2) # B, C, H, W
+        return self.out_conv(x).permute(0,2,3,1).reshape(B,N,2)  # B, N, 2
 
 
 class VisionTransformerDiffPruning(nn.Module):
@@ -437,17 +456,17 @@ class VisionTransformerDiffPruning(nn.Module):
         for i, blk in enumerate(self.blocks):
             if self.training:
                 spatial_x = x[:, 1:]
-                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score # B, N, 2
+                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
                 
                 # 这一层的训练
                 hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * std_decision
                 out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
                 cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                 policy = torch.cat([cls_policy, hard_keep_decision], dim=1)
-                x = blk(x, policy=policy)
                 
-                # 下一层用
-                prev_decision = F.softmax(pred_score[:,:,0:1], dim = 1)
+                # 累加
+                x = blk(x, policy=policy) * 0.8 + x * 0.2
+                final_decision = hard_keep_decision
             else:
                 spatial_x = x[:, 1:]
                 pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score
@@ -458,6 +477,7 @@ class VisionTransformerDiffPruning(nn.Module):
                 now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
                 
                 # pruned MHSA
+                prev_x = x
                 original_x = x
                 x = batch_index_select(x, now_policy) # B, N*ratio, C
                 x = blk(x)
@@ -466,10 +486,10 @@ class VisionTransformerDiffPruning(nn.Module):
                 index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
                 now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
                 original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
-                x = original_x
                 
-                # 下一层用
-                prev_decision = F.softmax(pred_score[:,:,0:1], dim = 1)
+                # 累加
+                x = original_x * 0.8 + prev_x * 0.2
+                
             """
             else:
                 if self.training:
@@ -485,7 +505,7 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, std_decision.detach(), out_pred_prob
+                return x, features, final_decision.detach(), out_pred_prob
             else:
                 return x, out_pred_prob
         else:
