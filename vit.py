@@ -444,8 +444,8 @@ class VisionTransformerDiffPruning(nn.Module):
         # Classifier head
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
-        # predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-        predictor_list = [PredictorLG(embed_dim) for _ in range(depth)]
+        predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
+        # predictor_list = [PredictorLG(embed_dim) for _ in range(depth)]
 
         self.score_predictor = nn.ModuleList(predictor_list)
 
@@ -495,51 +495,51 @@ class VisionTransformerDiffPruning(nn.Module):
         policy = torch.ones(B, init_n + 1, 1, dtype=x.dtype, device=x.device)
         pred_score = 0
         for i, blk in enumerate(self.blocks):
-            if self.training:
-                spatial_x = x[:, 1:]
-                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
+            if i in self.pruning_loc:
+                if self.training:
+                    spatial_x = x[:, 1:]
+                    pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
+                    
+                    # 这一层的训练
+                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * std_decision # B, N, 1
+                    out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
+                    cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
+                    policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
+                    
+                    # 累加              
+                    x = blk(x, policy=policy) + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    final_decision = hard_keep_decision
+                else:
+                    spatial_x = x[:, 1:]
+                    pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score
+                    score = pred_score[:,:,0]
+                    num_keep_node = int(init_n * self.token_ratio[i])
+                    keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
+                    cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
+                    now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
+                    
+                    original_x = x
+                    
+                    # pruned MHSA
+                    x = batch_index_select(x, now_policy) # B, N*ratio, C
+                    x = blk(x)
+                    
+                    # 累加
+                    original_x = original_x + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
+                    
+                    # 把idle部分拼回去
+                    index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+                    now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
+                    original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
+                    
+                    x = original_x
                 
-                # 这一层的训练
-                hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * std_decision # B, N, 1
-                out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
-                cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
-                policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
-                
-                # 累加              
-                x = blk(x, policy=policy) + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
-                final_decision = hard_keep_decision
-            else:
-                spatial_x = x[:, 1:]
-                pred_score = self.score_predictor[i](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score
-                score = pred_score[:,:,0]
-                num_keep_node = int(init_n * self.token_ratio[i])
-                keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
-                
-                original_x = x
-                
-                # pruned MHSA
-                x = batch_index_select(x, now_policy) # B, N*ratio, C
-                x = blk(x)
-                
-                # 累加
-                original_x = original_x + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
-                
-                # 把idle部分拼回去
-                index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-                now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
-                original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
-                
-                x = original_x
-                
-            """
             else:
                 if self.training:
                     x = blk(x, policy)
                 else:
                     x = blk(x)
-            """
+            
         
         x = self.norm(x)
         features = x[:, 1:]
