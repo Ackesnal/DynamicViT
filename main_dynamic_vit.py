@@ -205,7 +205,7 @@ def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_
     if step < warming_up_step:
         backbone_lr = 0
     else:
-        backbone_lr = min(init_lr * 0.01, cos_lr)
+        backbone_lr = min(init_lr * 0.1, cos_lr)
     print('## Using lr  %.7f for BACKBONE, cosine lr = %.7f for PREDICTOR' % (backbone_lr, cos_lr))
     for param_group in param_groups:
         if param_group['name'] == 'predictor':
@@ -289,9 +289,9 @@ def main(args):
 
     if args.arch == 'deit_small':
         # PRUNING_LOC = [3,6,9]
-        PRUNING_LOC = [i for i in range(12)] # 每层都加一个predictor
+        PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
         KEEP_RATE = []
-        for i in range(4):
+        for i in range(3):
             KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
@@ -503,7 +503,7 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
-        warmup_step = 10
+        warmup_step = 5
         adjust_learning_rate(optimizer.param_groups, args.lr, args.min_lr, epoch, args.epochs, warmup_predictor=False, warming_up_step=warmup_step, base_multi=0.1)
 
         train_stats = train_one_epoch(
