@@ -182,6 +182,7 @@ class Attention(nn.Module):
         return attn.type_as(max_att)
 
     def forward(self, x, policy):
+        # policy: B, N+1, 1
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
@@ -192,7 +193,7 @@ class Attention(nn.Module):
             attn = attn.softmax(dim=-1)
         else:
             attn = self.softmax_with_policy(attn, policy)
-
+        
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
@@ -445,7 +446,6 @@ class VisionTransformerDiffPruning(nn.Module):
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-        print(len(pruning_loc), "/n/n/n/n/n")
         # predictor_list = [PredictorLG(embed_dim) for _ in range(depth)]
 
         self.score_predictor = nn.ModuleList(predictor_list)
@@ -458,6 +458,11 @@ class VisionTransformerDiffPruning(nn.Module):
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
         self.apply(self._init_weights)
+        
+        # 做pooling
+        self.linear = nn.ModuleList([nn.Linear(embed_dim, embed_dim) for _ in range(len(pruning_loc))])
+        self.poolnorm = nn.ModuleList([norm_layer(embed_dim) for _ in range(len(pruning_loc))])
+        self.drop = nn.ModuleList([DropPath(i) for i in dpr])
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -507,8 +512,14 @@ class VisionTransformerDiffPruning(nn.Module):
                     cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                     policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
                     
-                    # 累加              
-                    x = blk(x, policy=policy) + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    # Pruned MHSA
+                    mhsa_x = blk(x, policy=policy) # B, N*ratio, C
+                    
+                    # Mean Pooling
+                    mean_x = torch.mean(x, dim=1, keepdim=True) + x
+                    mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
+                    
+                    x = mhsa_x*policy + mean_x*(1-policy)
                     final_decision = hard_keep_decision
                 else:
                     spatial_x = x[:, 1:]
@@ -519,21 +530,21 @@ class VisionTransformerDiffPruning(nn.Module):
                     cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
                     now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
                     
-                    original_x = x
+                    # Pruned MHSA
+                    mhsa_x = batch_index_select(x, now_policy) # B, N*ratio, C
+                    mhsa_x = blk(mhsa_x)
                     
-                    # pruned MHSA
-                    x = batch_index_select(x, now_policy) # B, N*ratio, C
-                    x = blk(x)
-                    
-                    # 累加
-                    original_x = original_x + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
+                    # Mean Pooling
+                    mean_x = torch.mean(x, dim=1, keepdim=True) + x
+                    mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
                     
                     # 把idle部分拼回去
                     index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
                     now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
-                    original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
+                    mean_x[now_policy.cpu().numpy()] = mhsa_x.reshape(B*(num_keep_node+1), -1)
                     
-                    x = original_x
+                    x = mean_x
+                    
                 p_count = p_count +1
                 
             else:
