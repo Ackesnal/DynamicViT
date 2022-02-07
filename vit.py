@@ -306,22 +306,6 @@ class PredictorLG(nn.Module):
         )
         """
         """
-        self.norm = nn.LayerNorm(embed_dim)
-        self.out_conv = nn.Sequential(
-            nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim), #384
-            nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim//3, kernel_size = 1), #128
-            nn.GELU(),
-            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 5, stride = 1, padding = 2, groups = embed_dim//3), #128
-            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1), #128
-            nn.GELU(),
-            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim//3), #128
-            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1), #128
-            nn.GELU(),
-            nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//6, kernel_size = 1), #64
-            nn.Conv2d(in_channels = embed_dim//6, out_channels = 2, kernel_size = 1), #2
-            nn.LogSoftmax(dim=1)
-        )
-        """
         self.norm0 = nn.LayerNorm(embed_dim) #384
         self.linear0 = nn.Linear(embed_dim, embed_dim//3) #128
         self.act0 = nn.GELU()
@@ -344,21 +328,22 @@ class PredictorLG(nn.Module):
         self.norm4 = nn.LayerNorm(embed_dim//3)
         self.linear4 = nn.Conv2d(in_channels = embed_dim//3, out_channels = 2, kernel_size = 1) #2
         self.out = nn.LogSoftmax(dim=-1)
+        """
+        self.norm0 = nn.LayerNorm(embed_dim) #384
+        self.linear0 = nn.Linear(embed_dim, embed_dim) #384
+        self.act0 = nn.GELU()
+        
+        self.norm1 = nn.LayerNorm(embed_dim) #384
+        self.pool1 = torch.nn.AvgPool2d(kernel_size = 3, stride = 1, padding = 1) #384
+        self.linear1 = nn.Linear(embed_dim, embed_dim // 4) #128
+        self.act1 = nn.GELU()
+        self.linear2 = nn.Linear(embed_dim // 4, 2)
+        self.out = nn.LogSoftmax(dim=-1)
         
 
     def forward(self, x, policy):
-        """
         # policy: B, N, 1
-        # x = self.in_conv(x)
         
-        B, N, C = x.size()
-        local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        global_x = global_x.expand(B, N, C//2)
-        x = torch.cat([local_x, global_x], dim=-1)
-        
-        x = self.norm(x).reshape(B, int(N**0.5), int(N**0.5), C).permute(0,3,1,2) # B, C, H, W
-        return self.out_conv(x).permute(0,2,3,1).reshape(B,N,2)  # B, N, 2
         """
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
@@ -372,8 +357,21 @@ class PredictorLG(nn.Module):
         x = self.act2(self.linear2(self.dpconv2(self.norm2(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
         x = self.act3(self.linear3(self.dpconv3(self.norm3(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
         x = self.out(self.linear4(self.norm4(x).permute(0,3,1,2)).permute(0,2,3,1))
-        
         return x.reshape(B, N, 2)
+        """
+        
+        B, N, C = x.size()
+        local_x = x[:,:, :C//2]
+        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
+        global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
+        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
+        
+        x = x.reshape(B, int(N**0.5), int(N**0.5), C)
+        x = self.act0(self.linear0(self.norm0(x)))
+        x = self.act1(self.linear1(self.pool1(self.norm1(x).permute(0,3,1,2)).permute(0,2,3,1)))
+        x = self.out(self.linear2(x))
+        return x.reshape(B, N, 2)
+        
 
 
 class VisionTransformerDiffPruning(nn.Module):
@@ -460,9 +458,9 @@ class VisionTransformerDiffPruning(nn.Module):
         self.apply(self._init_weights)
         
         # 做pooling
-        self.linear = nn.ModuleList([nn.Linear(embed_dim, embed_dim) for _ in range(len(pruning_loc))])
-        self.poolnorm = nn.ModuleList([norm_layer(embed_dim) for _ in range(len(pruning_loc))])
-        self.drop = nn.ModuleList([DropPath(i) for i in dpr])
+        # self.linear = nn.ModuleList([nn.Linear(embed_dim, embed_dim) for _ in range(len(pruning_loc))])
+        # self.poolnorm = nn.ModuleList([norm_layer(embed_dim) for _ in range(len(pruning_loc))])
+        # self.drop = nn.ModuleList([DropPath(i) for i in dpr])
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -517,7 +515,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     
                     # Mean Pooling
                     mean_x = torch.mean(x, dim=1, keepdim=True) + x
-                    mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
+                    # mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
                     
                     x = mhsa_x*policy + mean_x*(1-policy)
                     final_decision = hard_keep_decision
@@ -536,7 +534,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     
                     # Mean Pooling
                     mean_x = torch.mean(x, dim=1, keepdim=True) + x
-                    mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
+                    # mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
                     
                     # 把idle部分拼回去
                     index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
