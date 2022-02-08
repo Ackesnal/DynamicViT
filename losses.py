@@ -81,8 +81,11 @@ class DiffPruningLoss(torch.nn.Module):
         self.print_mode = print_mode
         self.cls_loss = 0
         self.ratio_loss = 0
+        self.cohesive_loss = 0
 
         self.ratio_weight = ratio_weight
+        
+        self.gate = torch.nn.AvgPool2d(3,stride=1,padding=1,divisor_override=1)
 
         self.dynamic = dynamic
 
@@ -112,20 +115,29 @@ class DiffPruningLoss(torch.nn.Module):
         for i, score in enumerate(out_pred_score):
             pos_ratio = score.mean(1)
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
+            
+        cohesive_loss = 0.0
+        for i, score in enumerate(out_pred_score):
+            B, N = score.shape
+            score = score.reshape(B, 1, int(N**0.5), int(N**0.5))
+            cohesive = (self.gate(score) * score).squeeze().sum((1,2)) # B
+            cohesive_loss = cohesive_loss + torch.abs(1/cohesive - 1/(ratio[i] * N * 9)).sum()
 
         cls_loss = self.base_criterion(pred, labels)
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc)
+        loss = self.clf_weight * cls_loss + self.ratio_weight * (pred_loss + cohesive_loss) / len(self.pruning_loc)
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
             self.ratio_loss += pred_loss.item()
+            self.cohesive_loss += cohesive_loss.item()
             self.count += 1
             if self.count == 100:
-                print('loss info: cls_loss=%.4f, ratio_loss=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100))
+                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cohesive_loss=$.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cohesive_loss / 100))
                 self.count = 0
                 self.cls_loss = 0
                 self.ratio_loss = 0
+                self.cohesive_loss = 0
         return loss
 
 
@@ -154,6 +166,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.distill_weight = distill_weight
 
         print('ratio_weight=', ratio_weight, 'distill_weight', distill_weight)
+        
+        self.gate = torch.nn.AvgPool2d(3,stride=1,padding=1,divisor_override=1)
 
 
         if dynamic:
@@ -180,6 +194,16 @@ class DistillDiffPruningLoss(torch.nn.Module):
             else:
                 pos_ratio = score.mean(1)
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
+        
+        
+        cohesive_loss = 0.0
+        for i, score in enumerate(out_pred_score):
+            B, N = score.shape
+            score = score.reshape(B, 1, int(N**0.5), int(N**0.5))
+            cohesive = (self.gate(score) * score).squeeze().sum((1,2)) # B
+            cohesive_loss = cohesive_loss + (1/cohesive - 1/(ratio[i] * N * 9)).sum()
+
+        
 
         cls_loss = self.base_criterion(pred, labels)
 
@@ -217,7 +241,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                     )
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss
+        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + cohesive_loss
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
