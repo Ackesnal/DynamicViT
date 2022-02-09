@@ -133,7 +133,7 @@ class DiffPruningLoss(torch.nn.Module):
             self.cohesive_loss += cohesive_loss.item()
             self.count += 1
             if self.count == 100:
-                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cohesive_loss=$.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cohesive_loss / 100))
+                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cohesive_loss=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cohesive_loss / 100))
                 self.count = 0
                 self.cls_loss = 0
                 self.ratio_loss = 0
