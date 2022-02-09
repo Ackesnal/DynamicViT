@@ -131,7 +131,7 @@ class DiffPruningLoss(torch.nn.Module):
         cls_loss = self.base_criterion(pred, labels)
         
         # print(cls_loss, pred_loss, attn_loss, cohesive_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * (pred_loss + cohesive_loss) / len(self.pruning_loc)
+        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc)  + cohesive_loss * 0.05
         
         
         if self.print_mode:
