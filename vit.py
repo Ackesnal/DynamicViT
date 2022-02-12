@@ -445,7 +445,6 @@ class VisionTransformerDiffPruning(nn.Module):
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-        print(len(pruning_loc), "/n/n/n/n/n")
         # predictor_list = [PredictorLG(embed_dim) for _ in range(depth)]
 
         self.score_predictor = nn.ModuleList(predictor_list)
@@ -512,7 +511,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     final_decision = hard_keep_decision
                 else:
                     spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score
+                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
                     score = pred_score[:,:,0]
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
