@@ -521,7 +521,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     final_decision = hard_keep_decision
                 else:
                     spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) + pred_score
+                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
                     score = pred_score[:,:,0]
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
