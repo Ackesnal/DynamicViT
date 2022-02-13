@@ -72,10 +72,11 @@ def main(args):
 
     if args.arch == 'deit_small':
         PRUNING_LOC = [3,6,9] 
-        PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
+        PRUNING_LOC = [i for i in range(5,12)] # 每层都加一个predictor
         KEEP_RATE = []
         for i in range(3):
             KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
+        KEEP_RATE = KEEP_RATE[2:]
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = VisionTransformerDiffPruning(
