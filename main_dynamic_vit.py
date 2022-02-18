@@ -290,6 +290,7 @@ def main(args):
     if args.arch == 'deit_small':
         # PRUNING_LOC = [3,6,9]
         PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
+        KEEP_RATE = []
         for i in range(3):
             KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
         print(f"Creating model: {args.arch}")

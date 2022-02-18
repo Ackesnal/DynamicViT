@@ -497,7 +497,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     x = blk(x)
                     
                     # 累加
-                    # original_x = original_x + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
+                    original_x = original_x # + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
                     
                     # 把idle部分拼回去
                     index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
