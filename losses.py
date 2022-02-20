@@ -71,7 +71,7 @@ class DiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=2.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
+    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=5.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
         super().__init__()
         self.base_criterion = base_criterion
         self.clf_weight = clf_weight
@@ -81,8 +81,10 @@ class DiffPruningLoss(torch.nn.Module):
         self.print_mode = print_mode
         self.cls_loss = 0
         self.ratio_loss = 0
+        self.cut_loss = 0
 
         self.ratio_weight = ratio_weight
+        self.cut_weight = 5.0
 
         self.dynamic = dynamic
 
@@ -99,7 +101,7 @@ class DiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        pred, out_pred_score = outputs
+        pred, out_pred_score, out_spatial_x = outputs
 
         pred_loss = 0.0
         # ratio = [1.0,] + self.keep_ratio
@@ -112,20 +114,47 @@ class DiffPruningLoss(torch.nn.Module):
         for i, score in enumerate(out_pred_score):
             pos_ratio = score.mean(1)
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
+            
+        cut_loss = 0
+        for i, spatial_x in enumerate(out_spatial_x):
+            # spatial_x: B,N,C
+            B, N, C = spatial_x.shape
+            sigma = 1
+            pair_dist = torch.cdist(spatial_x, spatial_x) # B,N,N
+            W = torch.exp(-(pair_dist**2)/(2*sigma**2)) # B,N,N
+            # D = torch.eye(N).repeat(B,1,1) # B,N,N
+            # L = D-W
+            pos = out_pred_score[i] # B,N
+            diffcut = torch.abs(pos.reshape(B,N,1) - pos.reshape(B,1,N)) # B,N,N
+            
+            # selected tokens
+            cut = ((diffcut * pos.reshape(B,N,1)) * W).sum((-1,-2)) # B,
+            assoc = (pos.reshape(B,N,1) * W).sum((-1,-2)) # B,
+            normalized_cut = (cut / assoc).sum()
+            cut_loss = cut_loss + normalized_cut
+            
+            # pruned tokens
+            cut = ((diffcut * (1-pos.reshape(B,N,1))) * W).sum((-1,-2))
+            assoc = ((1-pos.reshape(B,N,1)) * W).sum((-1,-2))
+            normalized_cut = (cut / assoc).sum()
+            cut_loss = cut_loss + normalized_cut
 
         cls_loss = self.base_criterion(pred, labels)
-        # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc)
-
+        
+        # print(cls_loss, pred_loss, cut_loss)
+        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.cut_weight * cut_loss
+        
         if self.print_mode:
             self.cls_loss += cls_loss.item()
             self.ratio_loss += pred_loss.item()
+            self.cut_loss += cut_loss.item()
             self.count += 1
             if self.count == 100:
-                print('loss info: cls_loss=%.4f, ratio_loss=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100))
+                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cut_loss=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cut_loss / 100))
                 self.count = 0
                 self.cls_loss = 0
                 self.ratio_loss = 0
+                self.cut_loss = 0
         return loss
 
 

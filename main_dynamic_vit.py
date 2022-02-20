@@ -27,6 +27,7 @@ from vit import VisionTransformerDiffPruning, VisionTransformerTeacher, _cfg, ch
 from lvvit import LVViTDiffPruning, LVViT_Teacher
 import math
 import shutil
+import torch.distributed.elastic.multiprocessing.errors as E
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DynamicViT training and evaluation script', add_help=False)
@@ -213,6 +214,7 @@ def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_
         else:
             param_group['lr'] = backbone_lr # init_lr * 0.01 # cos_lr * base_multi
 
+@E.record
 def main(args):
     utils.init_distributed_mode(args)
 

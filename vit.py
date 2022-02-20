@@ -346,7 +346,6 @@ class PredictorLG(nn.Module):
         x = self.out(self.linear2(x))
         return x.reshape(B, N, 2)
 
-
 class VisionTransformerDiffPruning(nn.Module):
     """ Vision Transformer
 
@@ -461,6 +460,7 @@ class VisionTransformerDiffPruning(nn.Module):
 
         p_count = 0
         out_pred_prob = []
+        out_spatial_x = []
         init_n = 14 * 14
         prev_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 记录上一次的选择结果
         std_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 标准选择，即全选
@@ -470,6 +470,7 @@ class VisionTransformerDiffPruning(nn.Module):
             if i in self.pruning_loc:
                 if self.training:
                     spatial_x = x[:, 1:]
+                    out_spatial_x.append(spatial_x.detach())
                     pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
                     
                     # 这一层的训练
@@ -521,9 +522,9 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, final_decision.detach(), out_pred_prob
+                return x, features, final_decision.detach(), out_pred_prob, out_spatial_x
             else:
-                return x, out_pred_prob
+                return x, out_pred_prob, out_spatial_x
         else:
             return x
 
