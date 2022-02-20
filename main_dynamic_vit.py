@@ -26,8 +26,7 @@ import torch.nn as nn
 from vit import VisionTransformerDiffPruning, VisionTransformerTeacher, _cfg, checkpoint_filter_fn
 from lvvit import LVViTDiffPruning, LVViT_Teacher
 import math
-import shutil
-import torch.distributed.elastic.multiprocessing.errors as E
+import shutil 
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DynamicViT training and evaluation script', add_help=False)
@@ -214,7 +213,6 @@ def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_
         else:
             param_group['lr'] = backbone_lr # init_lr * 0.01 # cos_lr * base_multi
 
-@E.record
 def main(args):
     utils.init_distributed_mode(args)
 
@@ -292,6 +290,7 @@ def main(args):
     if args.arch == 'deit_small':
         # PRUNING_LOC = [3,6,9]
         PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
+        KEEP_RATE = []
         for i in range(3):
             KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
         print(f"Creating model: {args.arch}")
