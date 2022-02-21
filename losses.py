@@ -125,15 +125,17 @@ class DiffPruningLoss(torch.nn.Module):
             pair_dist = torch.cdist(spatial_x, spatial_x) # B,N,N
             
             W = torch.exp(-(pair_dist**2)/(2*sigma**2)) # B,N,N
-            # D = torch.eye(N, dtype=W.dtype, device=W.device).repeat(B,1,1) # B,N,N
-            # W = W-D
+            D = torch.eye(N, dtype=W.dtype, device=W.device).repeat(B,1,1) # B,N,N
+            W = W-D
             pos = out_pred_score[i] # B,N
             diffcut = torch.abs(pos.reshape(B,N,1) - pos.reshape(B,1,N)) # B,N,N
             
             # normalized cut
-            cut = (diffcut * W).sum(-1)
-            assoc = (pos.reshape(B,N,1)*W).sum((-1,-2)).reshape(B,1) * pos + ((1-pos).reshape(B,N,1)*W).sum((-1,-2)).reshape(B,1) * (1-pos)
-            normalized_cut= (cut / assoc).mean()
+            cut = (diffcut * W).sum((-1,-2)) # B
+            # assoc = (pos.reshape(B,N,1)*W).sum((-1,-2)).reshape(B,1) * pos + ((1-pos).reshape(B,N,1)*W).sum((-1,-2)).reshape(B,1) * (1-pos)
+            assoc = (1 / (pos.reshape(B,N,1)*(1-diffcut)*W).sum((-1,-2))) + (1 / ((1-pos).reshape(B,N,1)*(1-diffcut)*W).sum((-1,-2)))
+            print(assoc.max(), assoc.min())
+            normalized_cut= (cut*assoc).mean()
             
             cut_loss = cut_loss + normalized_cut
 
