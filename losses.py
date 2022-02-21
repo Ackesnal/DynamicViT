@@ -84,7 +84,7 @@ class DiffPruningLoss(torch.nn.Module):
         self.cut_loss = 0
 
         self.ratio_weight = ratio_weight
-        self.cut_weight = 10
+        self.cut_weight = 0.1
 
         self.dynamic = dynamic
 
@@ -131,18 +131,17 @@ class DiffPruningLoss(torch.nn.Module):
             diffcut = torch.abs(pos.reshape(B,N,1) - pos.reshape(B,1,N)) # B,N,N
             
             # normalized cut
-            cut = (diffcut * W).sum((-1,-2)) # B
-            # assoc = (pos.reshape(B,N,1)*W).sum((-1,-2)).reshape(B,1) * pos + ((1-pos).reshape(B,N,1)*W).sum((-1,-2)).reshape(B,1) * (1-pos)
-            assoc = (1 / (pos.reshape(B,N,1)*(1-diffcut)*W).sum((-1,-2))) + (1 / ((1-pos).reshape(B,N,1)*(1-diffcut)*W).sum((-1,-2)))
-            print(assoc.max(), assoc.min())
-            normalized_cut= (cut*assoc).mean()
+            cut = (pos.reshape(B,N,1)*diffcut*W).sum((-1,-2)) # B
+            assoc_1 = (pos.reshape(B,N,1)*W).sum((-1,-2)) # B
+            assoc_2 = ((1-pos).reshape(B,N,1)*W).sum((-1,-2)) # B
+            normalized_cut = cut / assoc_1 + cut / assoc_2
             
-            cut_loss = cut_loss + normalized_cut
+            cut_loss = cut_loss + normalized_cut.mean()
 
         cls_loss = self.base_criterion(pred, labels)
         
         # print(cls_loss, pred_loss, cut_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.cut_weight * cut_loss
+        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.cut_weight * cut_loss / len(self.pruning_loc)
         
         if self.print_mode:
             self.cls_loss += cls_loss.item()
