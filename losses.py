@@ -71,7 +71,7 @@ class DiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=10.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
+    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=3.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
         super().__init__()
         self.base_criterion = base_criterion
         self.clf_weight = clf_weight
@@ -84,7 +84,7 @@ class DiffPruningLoss(torch.nn.Module):
         self.cut_loss = 0
 
         self.ratio_weight = ratio_weight
-        self.cut_weight = 0.1
+        self.cut_weight = 1.0
 
         self.dynamic = dynamic
 
@@ -119,14 +119,14 @@ class DiffPruningLoss(torch.nn.Module):
         for i, spatial_x in enumerate(out_spatial_x):
             # spatial_x: B,N,C
             B, N, C = spatial_x.shape
-            sigma = 1
+            sigma = 0.2
             
             spatial_x = torch.nn.functional.normalize(spatial_x, dim = -1)
             pair_dist = torch.cdist(spatial_x, spatial_x) # B,N,N
             
             W = torch.exp(-(pair_dist**2)/(2*sigma**2)) # B,N,N
-            D = torch.eye(N, dtype=W.dtype, device=W.device).repeat(B,1,1) # B,N,N
-            W = W-D
+            # D = torch.eye(N, dtype=W.dtype, device=W.device).repeat(B,1,1) # B,N,N
+            # W = W-D
             pos = out_pred_score[i] # B,N
             diffcut = torch.abs(pos.reshape(B,N,1) - pos.reshape(B,1,N)) # B,N,N
             
@@ -134,7 +134,7 @@ class DiffPruningLoss(torch.nn.Module):
             cut = (pos.reshape(B,N,1)*diffcut*W).sum((-1,-2)) # B
             assoc_1 = (pos.reshape(B,N,1)*W).sum((-1,-2)) # B
             assoc_2 = ((1-pos).reshape(B,N,1)*W).sum((-1,-2)) # B
-            normalized_cut = cut / assoc_1 + cut / assoc_2
+            normalized_cut = cut / assoc_1 # + cut / assoc_2
             
             cut_loss = cut_loss + normalized_cut.mean()
 
