@@ -503,7 +503,7 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
-        warmup_step = 3
+        warmup_step = 2
         adjust_learning_rate(optimizer.param_groups, args.lr, args.min_lr, epoch, args.epochs, warmup_predictor=False, warming_up_step=warmup_step, base_multi=0.1)
 
         train_stats = train_one_epoch(

@@ -187,6 +187,7 @@ class Attention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        weight = attn[:,:,1:,1:]
 
         if policy is None:
             attn = attn.softmax(dim=-1)
@@ -196,7 +197,7 @@ class Attention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        return x, weight
 
 
 
@@ -216,12 +217,14 @@ class Block(nn.Module):
 
     def forward(self, x, policy=None):
         if policy != None:
-            x = x + self.drop_path(self.attn(self.norm1(x), policy=policy) * policy) 
+            tmp, attn = self.attn(self.norm1(x), policy=policy)
+            x = x + self.drop_path(tmp * policy) 
             x = x + self.drop_path(self.mlp(self.norm2(x)) * policy) 
         else:
-            x = x + self.drop_path(self.attn(self.norm1(x), policy=policy))
+            tmp, attn = self.attn(self.norm1(x), policy=policy)
+            x = x + self.drop_path(tmp * policy) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
+        return x, attn
 
 
 class PatchEmbed(nn.Module):
@@ -321,19 +324,6 @@ class PredictorLG(nn.Module):
         
 
     def forward(self, x, policy):
-        """
-        # policy: B, N, 1
-        # x = self.in_conv(x)
-        
-        B, N, C = x.size()
-        local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        global_x = global_x.expand(B, N, C//2)
-        x = torch.cat([local_x, global_x], dim=-1)
-        
-        x = self.norm(x).reshape(B, int(N**0.5), int(N**0.5), C).permute(0,3,1,2) # B, C, H, W
-        return self.out_conv(x).permute(0,2,3,1).reshape(B,N,2)  # B, N, 2
-        """
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
         global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
@@ -460,7 +450,7 @@ class VisionTransformerDiffPruning(nn.Module):
 
         p_count = 0
         out_pred_prob = []
-        out_spatial_x = []
+        out_attns = []
         init_n = 14 * 14
         prev_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 记录上一次的选择结果
         std_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 标准选择，即全选
@@ -470,7 +460,6 @@ class VisionTransformerDiffPruning(nn.Module):
             if i in self.pruning_loc:
                 if self.training:
                     spatial_x = x[:, 1:]
-                    out_spatial_x.append(spatial_x.detach())
                     pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
                     
                     # 这一层的训练
@@ -480,7 +469,8 @@ class VisionTransformerDiffPruning(nn.Module):
                     policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
                     
                     # 累加              
-                    x = blk(x, policy=policy) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    x, attn = blk(x, policy=policy) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    out_attns.append(attn)
                     final_decision = hard_keep_decision
                 else:
                     spatial_x = x[:, 1:]
@@ -495,7 +485,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     
                     # pruned MHSA
                     x = batch_index_select(x, now_policy) # B, N*ratio, C
-                    x = blk(x)
+                    x, attn = blk(x)
                     
                     # 累加
                     # original_x = original_x + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
@@ -506,13 +496,14 @@ class VisionTransformerDiffPruning(nn.Module):
                     original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
                     
                     x = original_x
+                    
                 p_count = p_count +1
                 
             else:
                 if self.training:
-                    x = blk(x, policy)
+                    x, attn = blk(x, policy)
                 else:
-                    x = blk(x)
+                    x, attn = blk(x)
             
         
         x = self.norm(x)
@@ -522,9 +513,9 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, final_decision.detach(), out_pred_prob, out_spatial_x
+                return x, features, final_decision.detach(), out_pred_prob, out_attns
             else:
-                return x, out_pred_prob, out_spatial_x
+                return x, out_pred_prob, out_attns
         else:
             return x
 

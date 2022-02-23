@@ -71,7 +71,7 @@ class DiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=3.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
+    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=5.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
         super().__init__()
         self.base_criterion = base_criterion
         self.clf_weight = clf_weight
@@ -87,6 +87,7 @@ class DiffPruningLoss(torch.nn.Module):
         self.cut_weight = 1.0
 
         self.dynamic = dynamic
+        self.mseloss = torch.nn.MSELoss()
 
         if self.dynamic:
             print('using dynamic loss')
@@ -101,7 +102,7 @@ class DiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        pred, out_pred_score, out_spatial_x = outputs
+        pred, out_pred_score, out_attns = outputs
 
         pred_loss = 0.0
         # ratio = [1.0,] + self.keep_ratio
@@ -115,29 +116,26 @@ class DiffPruningLoss(torch.nn.Module):
             pos_ratio = score.mean(1)
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
             
-        cut_loss = 0
-        for i, spatial_x in enumerate(out_spatial_x):
-            # spatial_x: B,N,C
-            B, N, C = spatial_x.shape
-            sigma = 0.2
+        cut_loss = 0.0
+        for i, attn in enumerate(out_attns):
+            score = out_pred_score[i] # B, N
+            attn = attn_x.mean(1) # B, N, N
             
-            spatial_x = torch.nn.functional.normalize(spatial_x, dim = -1)
-            pair_dist = torch.cdist(spatial_x, spatial_x) # B,N,N
+            B, N, _ = attn.shape
+            K = int(ratio[i] * N)
             
-            W = torch.exp(-(pair_dist**2)/(2*sigma**2)) # B,N,N
-            # D = torch.eye(N, dtype=W.dtype, device=W.device).repeat(B,1,1) # B,N,N
-            # W = W-D
-            pos = out_pred_score[i] # B,N
-            diffcut = torch.abs(pos.reshape(B,N,1) - pos.reshape(B,1,N)) # B,N,N
+            rank = torch.argsort(attn, dim = -1, descending=True)[:, :, :K] # B, N, K
+            dim1 = torch.arange(B).reshape(-1,1).expand(B, N*K).reshape(-1) # B*N*K
+            dim2 = torch.arange(N).reshape(-1,1).expand(N, K).reshape(-1).repeat(B) # B*N*K
+            dim3 = rank.reshape(-1) # B*N*K
             
-            # normalized cut
-            cut = (pos.reshape(B,N,1)*diffcut*W).sum((-1,-2)) # B
-            assoc_1 = (pos.reshape(B,N,1)*W).sum((-1,-2)) # B
-            assoc_2 = ((1-pos).reshape(B,N,1)*W).sum((-1,-2)) # B
-            normalized_cut = cut / assoc_1 # + cut / assoc_2
+            keep_matrix = torch.zeros(B, N, N, dtype=score.dtype, device=score.device) # B, N, N
+            keep_matrix[dim1, dim2, dim3] = 1.0 # B, N, N
             
-            cut_loss = cut_loss + normalized_cut.mean()
-
+            selected = (keep_matrix * score.reshape(B, N, 1)).sum(1) / score.sum(1).reshape(B, 1) # B, N
+            
+            cut_loss = cut_loss + self.mseloss(selected, score)
+            
         cls_loss = self.base_criterion(pred, labels)
         
         # print(cls_loss, pred_loss, cut_loss)
