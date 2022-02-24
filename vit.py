@@ -187,7 +187,7 @@ class Attention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
-        weight = attn[:,:,1:,1:]
+        weight = attn[:,:,0,1:]
 
         if policy is None:
             attn = attn.softmax(dim=-1)
@@ -222,7 +222,7 @@ class Block(nn.Module):
             x = x + self.drop_path(self.mlp(self.norm2(x)) * policy) 
         else:
             tmp, attn = self.attn(self.norm1(x), policy=policy)
-            x = x + self.drop_path(tmp * policy) 
+            x = x + self.drop_path(tmp) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x, attn
 
@@ -621,7 +621,7 @@ class VisionTransformerTeacher(nn.Module):
         x = self.pos_drop(x)
 
         for i, blk in enumerate(self.blocks):
-            x = blk(x)
+            x, attn = blk(x)
 
         feature = self.norm(x)
         cls = feature[:, 0]

@@ -84,7 +84,7 @@ class DiffPruningLoss(torch.nn.Module):
         self.cut_loss = 0
 
         self.ratio_weight = ratio_weight
-        self.cut_weight = 1.0
+        self.cut_weight = 5.0
 
         self.dynamic = dynamic
         self.mseloss = torch.nn.MSELoss()
@@ -102,7 +102,7 @@ class DiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        pred, out_pred_score, out_attns = outputs
+        pred, out_pred_score, out_spatial_x = outputs
 
         pred_loss = 0.0
         # ratio = [1.0,] + self.keep_ratio
@@ -117,29 +117,25 @@ class DiffPruningLoss(torch.nn.Module):
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
             
         cut_loss = 0.0
-        for i, attn in enumerate(out_attns):
+        for i, spatial_x in enumerate(out_spatial_x):
             score = out_pred_score[i] # B, N
-            attn = attn_x.mean(1) # B, N, N
-            
-            B, N, _ = attn.shape
+            spatial_x = spatial_x.mean(1) # B, N
+            B, N = spatial_x.shape
             K = int(ratio[i] * N)
             
-            rank = torch.argsort(attn, dim = -1, descending=True)[:, :, :K] # B, N, K
-            dim1 = torch.arange(B).reshape(-1,1).expand(B, N*K).reshape(-1) # B*N*K
-            dim2 = torch.arange(N).reshape(-1,1).expand(N, K).reshape(-1).repeat(B) # B*N*K
-            dim3 = rank.reshape(-1) # B*N*K
+            rank = torch.argsort(spatial_x, dim = -1, descending=True)[:, :K] # B, K
+            dim1 = torch.arange(B).reshape(-1,1).expand(B, K).reshape(-1) # B*K
+            dim2 = rank.reshape(-1) # B*K
             
-            keep_matrix = torch.zeros(B, N, N, dtype=score.dtype, device=score.device) # B, N, N
-            keep_matrix[dim1, dim2, dim3] = 1.0 # B, N, N
+            target = torch.zeros(B, N, dtype=score.dtype, device=score.device) # B, N
+            target[dim1, dim2] = 1.0
             
-            selected = (keep_matrix * score.reshape(B, N, 1)).sum(1) / score.sum(1).reshape(B, 1) # B, N
-            
-            cut_loss = cut_loss + self.mseloss(selected, score)
+            cut_loss = cut_loss + self.mseloss(target, score)
             
         cls_loss = self.base_criterion(pred, labels)
         
         # print(cls_loss, pred_loss, cut_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.cut_weight * cut_loss / len(self.pruning_loc)
+        loss = self.clf_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) # + self.ratio_weight * pred_loss / len(self.pruning_loc) 
         
         if self.print_mode:
             self.cls_loss += cls_loss.item()
@@ -178,6 +174,11 @@ class DistillDiffPruningLoss(torch.nn.Module):
 
         self.ratio_weight = ratio_weight
         self.distill_weight = distill_weight
+        
+        
+        self.mseloss = torch.nn.MSELoss()
+        self.cut_loss = 0
+        self.cut_weight = 2.0
 
         print('ratio_weight=', ratio_weight, 'distill_weight', distill_weight)
 
@@ -218,6 +219,22 @@ class DistillDiffPruningLoss(torch.nn.Module):
                 reduction='batchmean',
                 log_target=True
             )
+            
+        cut_loss = 0.0
+        for i, spatial_x in enumerate(out_spatial_x):
+            score = out_pred_score[i] # B, N
+            spatial_x = spatial_x.mean(1) # B, N
+            B, N = spatial_x.shape
+            K = int(ratio[i] * N)
+            
+            rank = torch.argsort(spatial_x, dim = -1, descending=True)[:, :K] # B, K
+            dim1 = torch.arange(B).reshape(-1,1).expand(B, K).reshape(-1) # B*K
+            dim2 = rank.reshape(-1) # B*K
+            
+            target = torch.zeros(B, N, dtype=score.dtype, device=score.device) # B, N
+            target[dim1, dim2] = 1.0
+            
+            cut_loss = cut_loss + self.mseloss(target, score)
         
         
         
@@ -246,20 +263,22 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss
+        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) # self.ratio_weight * pred_loss / len(self.pruning_loc) 
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
             self.ratio_loss += pred_loss.item()
             self.cls_distill_loss += cls_kl_loss.item()
             self.token_distill_loss += token_kl_loss.item()
+            self.cut_loss += cut_loss.item()
             self.count += 1
             if self.count == 100:
-                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cls_kl=%.4f, token_kl=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100))
+                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100, self.cut_loss/100))
                 self.count = 0
                 self.cls_loss = 0
                 self.ratio_loss = 0
                 self.cls_distill_loss = 0
                 self.token_distill_loss = 0
+                self.cut_loss = 0
         return loss
 
