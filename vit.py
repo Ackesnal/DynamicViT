@@ -151,7 +151,6 @@ class Mlp(nn.Module):
         return x
 
 
-
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -165,40 +164,52 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def softmax_with_policy(self, attn, policy, eps=1e-6):
-        B, N, _ = policy.size()
-        B, H, N, N = attn.size()
-        attn_policy = policy.reshape(B, 1, 1, N)  # * policy.reshape(B, 1, N, 1)
-        eye = torch.eye(N, dtype=attn_policy.dtype, device=attn_policy.device).view(1, 1, N, N)
-        attn_policy = attn_policy + (1.0 - attn_policy) * eye
-        max_att = torch.max(attn, dim=-1, keepdim=True)[0]
-        attn = attn - max_att
-        # attn = attn.exp_() * attn_policy
-        # return attn / attn.sum(dim=-1, keepdim=True)
+    def softmax_with_top_attn(self, attn, num_keep_node):
+        B, H, N, N = attn.shape
+        
+        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+        cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+        
+        attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
+        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+        dim2 = top_attn.reshape(-1) # B*(K+1)
+        attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
+        attn_mask = attn_mask * (-1000.0) # 降低attn的比重
+        attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
+        
+        attn = attn + attn_mask
+        
+        return attn.softmax(-1), top_attn
 
-        # for stable training
-        attn = attn.to(torch.float32).exp_() * attn_policy.to(torch.float32)
-        attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
-        return attn.type_as(max_att)
-
-    def forward(self, x, policy):
+    def forward(self, x, num_keep_node = None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
-        weight = attn[:,:,0,1:]
 
-        if policy is None:
+        if num_keep_node is None:
             attn = attn.softmax(dim=-1)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            return x
         else:
-            attn = self.softmax_with_policy(attn, policy)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x, weight
-
+            attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            
+            # generate the top attn mask
+            attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+            dim2 = top_attn.reshape(-1) # B*(K+1)
+            attn_mask[dim1, dim2] = 1.0
+            attn_mask = attn_mask.reshape(B,N,1)
+            
+            x = x * attn_mask
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            return x, attn_mask
 
 
 class Block(nn.Module):
@@ -215,16 +226,16 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, policy=None):
-        if policy != None:
-            tmp, attn = self.attn(self.norm1(x), policy=policy)
-            x = x + self.drop_path(tmp * policy) 
-            x = x + self.drop_path(self.mlp(self.norm2(x)) * policy) 
+    def forward(self, x, num_keep_node = None):
+        if num_keep_node is not None:
+            tmp, attn_mask = self.attn(self.norm1(x), num_keep_node = num_keep_node)
+            x = x + self.drop_path(tmp * attn_mask) 
+            x = x + self.drop_path(self.mlp(self.norm2(x)) * attn_mask) 
+            return x, attn_mask
         else:
-            tmp, attn = self.attn(self.norm1(x), policy=policy)
-            x = x + self.drop_path(tmp) 
+            x = x + self.drop_path(self.attn(self.norm1(x))) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x, attn
+            return x
 
 
 class PatchEmbed(nn.Module):
@@ -326,7 +337,6 @@ class PredictorLG(nn.Module):
     def forward(self, x, policy):
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
         global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
         x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
         
@@ -335,6 +345,7 @@ class PredictorLG(nn.Module):
         x = self.act1(self.linear1(self.norm1(x)))
         x = self.out(self.linear2(x))
         return x.reshape(B, N, 2)
+        
 
 class VisionTransformerDiffPruning(nn.Module):
     """ Vision Transformer
@@ -465,16 +476,15 @@ class VisionTransformerDiffPruning(nn.Module):
                     # 这一层的训练
                     hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * std_decision # B, N, 1
                     out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
-                    cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
-                    policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
                     
-                    # 累加              
-                    x, attn = blk(x, policy=policy) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    # 累加
+                    num_keep_node = int(init_n * self.token_ratio[p_count])
+                    x, attn = blk(x, num_keep_node = num_keep_node) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
                     out_attns.append(attn)
                     final_decision = hard_keep_decision
                 else:
                     spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
+                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
                     score = pred_score[:,:,0]
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
@@ -485,7 +495,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     
                     # pruned MHSA
                     x = batch_index_select(x, now_policy) # B, N*ratio, C
-                    x, attn = blk(x)
+                    x = blk(x)
                     
                     # 累加
                     # original_x = original_x + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
@@ -500,16 +510,13 @@ class VisionTransformerDiffPruning(nn.Module):
                 p_count = p_count +1
                 
             else:
-                if self.training:
-                    x, attn = blk(x, policy)
-                else:
-                    x, attn = blk(x)
+                x = blk(x)
             
         
         x = self.norm(x)
-        features = x[:, 1:]
         x = x[:, 0]
         x = self.pre_logits(x)
+        features = x
         x = self.head(x)
         if self.training:
             if self.distill:
@@ -621,12 +628,12 @@ class VisionTransformerTeacher(nn.Module):
         x = self.pos_drop(x)
 
         for i, blk in enumerate(self.blocks):
-            x, attn = blk(x)
+            x = blk(x)
 
         feature = self.norm(x)
         cls = feature[:, 0]
-        tokens = feature[:, 1:]
         cls = self.pre_logits(cls)
+        tokens = cls
         cls = self.head(cls)
         return cls, tokens
 

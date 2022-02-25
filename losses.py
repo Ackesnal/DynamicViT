@@ -71,7 +71,7 @@ class DiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=5.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
+    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=2.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
         super().__init__()
         self.base_criterion = base_criterion
         self.clf_weight = clf_weight
@@ -84,7 +84,7 @@ class DiffPruningLoss(torch.nn.Module):
         self.cut_loss = 0
 
         self.ratio_weight = ratio_weight
-        self.cut_weight = 5.0
+        self.cut_weight = 2.0
 
         self.dynamic = dynamic
         self.mseloss = torch.nn.MSELoss()
@@ -102,7 +102,7 @@ class DiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        pred, out_pred_score, out_spatial_x = outputs
+        pred, out_pred_score, out_attns = outputs
 
         pred_loss = 0.0
         # ratio = [1.0,] + self.keep_ratio
@@ -117,20 +117,10 @@ class DiffPruningLoss(torch.nn.Module):
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
             
         cut_loss = 0.0
-        for i, spatial_x in enumerate(out_spatial_x):
+        for i, attn in enumerate(out_attns):
             score = out_pred_score[i] # B, N
-            spatial_x = spatial_x.mean(1) # B, N
-            B, N = spatial_x.shape
-            K = int(ratio[i] * N)
-            
-            rank = torch.argsort(spatial_x, dim = -1, descending=True)[:, :K] # B, K
-            dim1 = torch.arange(B).reshape(-1,1).expand(B, K).reshape(-1) # B*K
-            dim2 = rank.reshape(-1) # B*K
-            
-            target = torch.zeros(B, N, dtype=score.dtype, device=score.device) # B, N
-            target[dim1, dim2] = 1.0
-            
-            cut_loss = cut_loss + self.mseloss(target, score)
+            attn = attn.squeeze()[:,1:]
+            cut_loss = cut_loss + self.mseloss(attn, score)
             
         cls_loss = self.base_criterion(pred, labels)
         
@@ -176,7 +166,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.distill_weight = distill_weight
         
         
-        self.mseloss = torch.nn.MSELoss()
+        self.pred_mseloss = torch.nn.MSELoss()
+        self.token_mseloss = torch.nn.MSELoss()
         self.cut_loss = 0
         self.cut_weight = 2.0
 
@@ -196,7 +187,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        pred, token_pred, mask, out_pred_score, out_spatial_x = outputs
+        pred, token_pred, mask, out_pred_score, out_attns = outputs
 
         pred_loss = 0.0
 
@@ -221,46 +212,12 @@ class DistillDiffPruningLoss(torch.nn.Module):
             )
             
         cut_loss = 0.0
-        for i, spatial_x in enumerate(out_spatial_x):
+        for i, attn in enumerate(out_attns):
             score = out_pred_score[i] # B, N
-            spatial_x = spatial_x.mean(1) # B, N
-            B, N = spatial_x.shape
-            K = int(ratio[i] * N)
-            
-            rank = torch.argsort(spatial_x, dim = -1, descending=True)[:, :K] # B, K
-            dim1 = torch.arange(B).reshape(-1,1).expand(B, K).reshape(-1) # B*K
-            dim2 = rank.reshape(-1) # B*K
-            
-            target = torch.zeros(B, N, dtype=score.dtype, device=score.device) # B, N
-            target[dim1, dim2] = 1.0
-            
-            cut_loss = cut_loss + self.mseloss(target, score)
+            attn = attn.squeeze()[:,1:]
+            cut_loss = cut_loss + self.pred_mseloss(attn, score)
         
-        
-        
-        B, N, C = token_pred.size()
-        assert mask.numel() == B * N
-        
-        bool_mask = mask.reshape(B*N) > 0.5
-
-        token_pred = token_pred.reshape(B*N, C)
-        token_t = token_t.reshape(B*N, C)
-        
-        if mask.sum() < 0.1:
-            token_kl_loss = token_pred.new(1,).fill_(0.0)
-        else:
-            token_t = token_t[bool_mask]
-            token_pred = token_pred[bool_mask]
-            if self.mse_token:
-                token_kl_loss = torch.pow(token_pred - token_t, 2).mean()
-            else:
-                token_kl_loss = F.kl_div(
-                        F.log_softmax(token_pred, dim=-1),
-                        F.log_softmax(token_t, dim=-1),
-                        reduction='batchmean',
-                        log_target=True
-                    )
-        
+        token_kl_loss = self.token_mseloss(token_pred, token_t)
         
         # print(cls_loss, pred_loss)
         loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) # self.ratio_weight * pred_loss / len(self.pruning_loc) 

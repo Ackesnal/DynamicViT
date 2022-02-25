@@ -205,7 +205,7 @@ def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_
     if step < warming_up_step:
         backbone_lr = 0
     else:
-        backbone_lr = min(init_lr * 0.05, cos_lr)
+        backbone_lr = min(init_lr * 0.1, cos_lr)
     print('## Using lr  %.7f for BACKBONE, cosine lr = %.7f for PREDICTOR' % (backbone_lr, cos_lr))
     for param_group in param_groups:
         if param_group['name'] == 'predictor':
@@ -503,7 +503,7 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
-        warmup_step = 2
+        warmup_step = 0
         adjust_learning_rate(optimizer.param_groups, args.lr, args.min_lr, epoch, args.epochs, warmup_predictor=False, warming_up_step=warmup_step, base_multi=0.1)
 
         train_stats = train_one_epoch(
