@@ -71,7 +71,7 @@ class DiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=2.0, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
+    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=0.5, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
         super().__init__()
         self.base_criterion = base_criterion
         self.clf_weight = clf_weight
@@ -84,7 +84,7 @@ class DiffPruningLoss(torch.nn.Module):
         self.cut_loss = 0
 
         self.ratio_weight = ratio_weight
-        self.cut_weight = 2.0
+        self.cut_weight = 5.0
 
         self.dynamic = dynamic
         self.mseloss = torch.nn.MSELoss()
@@ -125,7 +125,7 @@ class DiffPruningLoss(torch.nn.Module):
         cls_loss = self.base_criterion(pred, labels)
         
         # print(cls_loss, pred_loss, cut_loss)
-        loss = self.clf_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) # + self.ratio_weight * pred_loss / len(self.pruning_loc) 
+        loss = self.clf_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.ratio_weight * pred_loss / len(self.pruning_loc) 
         
         if self.print_mode:
             self.cls_loss += cls_loss.item()
@@ -146,7 +146,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, teacher_model, base_criterion: torch.nn.Module, ratio_weight=2.0, distill_weight=0.5, dynamic=False, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, mse_token=False, print_mode=True):
+    def __init__(self, teacher_model, base_criterion: torch.nn.Module, ratio_weight=0.5, distill_weight=10.0, dynamic=False, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, mse_token=False, print_mode=True):
         super().__init__()
         self.teacher_model = teacher_model
         self.base_criterion = base_criterion
@@ -169,7 +169,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.pred_mseloss = torch.nn.MSELoss()
         self.token_mseloss = torch.nn.MSELoss()
         self.cut_loss = 0
-        self.cut_weight = 2.0
+        self.cut_weight = 5.0
 
         print('ratio_weight=', ratio_weight, 'distill_weight', distill_weight)
 
@@ -220,7 +220,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         token_kl_loss = self.token_mseloss(token_pred, token_t)
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) # self.ratio_weight * pred_loss / len(self.pruning_loc) 
+        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.ratio_weight * pred_loss / len(self.pruning_loc) 
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()

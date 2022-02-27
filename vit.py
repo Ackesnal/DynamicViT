@@ -175,7 +175,7 @@ class Attention(nn.Module):
         dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
         dim2 = top_attn.reshape(-1) # B*(K+1)
         attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
-        attn_mask = attn_mask * (-1000.0) # 降低attn的比重
+        attn_mask = attn_mask * (-100000.0) # 降低attn的比重
         attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
         
         attn = attn + attn_mask
@@ -198,6 +198,8 @@ class Attention(nn.Module):
         else:
             attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
             
             # generate the top attn mask
             attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
@@ -205,10 +207,8 @@ class Attention(nn.Module):
             dim2 = top_attn.reshape(-1) # B*(K+1)
             attn_mask[dim1, dim2] = 1.0
             attn_mask = attn_mask.reshape(B,N,1)
+            attn_mask.requires_grad = False
             
-            x = x * attn_mask
-            x = self.proj(x)
-            x = self.proj_drop(x)
             return x, attn_mask
 
 
@@ -229,8 +229,8 @@ class Block(nn.Module):
     def forward(self, x, num_keep_node = None):
         if num_keep_node is not None:
             tmp, attn_mask = self.attn(self.norm1(x), num_keep_node = num_keep_node)
-            x = x + self.drop_path(tmp * attn_mask) 
-            x = x + self.drop_path(self.mlp(self.norm2(x)) * attn_mask) 
+            x = x + self.drop_path(tmp) * attn_mask
+            x = x + self.drop_path(self.mlp(self.norm2(x))) * attn_mask
             return x, attn_mask
         else:
             x = x + self.drop_path(self.attn(self.norm1(x))) 
@@ -307,43 +307,49 @@ class PredictorLG(nn.Module):
     """
     def __init__(self, embed_dim=384):
         super().__init__()
-        """
-        self.in_conv = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU()
-        )
-        self.out_conv = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.GELU(),
-            nn.Linear(embed_dim // 2, embed_dim // 4),
-            nn.GELU(),
-            nn.Linear(embed_dim // 4, 2),
-            nn.LogSoftmax(dim=-1)
-        )
-        """
+        
         self.norm0 = nn.LayerNorm(embed_dim) #384
         self.linear0 = nn.Linear(embed_dim, embed_dim) #384
-        self.pool0 = torch.nn.AvgPool2d(kernel_size = 3, stride = 1, padding = 1, count_include_pad=False) #384
-        self.act0 = nn.GELU()
+        self.pool0 = torch.nn.AdaptiveAvgPool2d(14) #384
+        self.act0 = nn.GELU() #128
         
-        self.norm1 = nn.LayerNorm(embed_dim) #384
-        self.linear1 = nn.Linear(embed_dim, embed_dim // 4) #128
-        self.act1 = nn.GELU()
-        self.linear2 = nn.Linear(embed_dim // 4, 2)
+        self.conv1 = nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim) #384
+        self.linear1 = nn.Linear(embed_dim, embed_dim // 3) #128
+        self.act1 = nn.GELU() #128
+        
+        self.conv2 = nn.Conv2d(in_channels = embed_dim // 3, out_channels = embed_dim // 3, kernel_size = 5, stride = 1, padding = 2, groups = embed_dim // 3) #128
+        self.linear2 = nn.Linear(embed_dim // 3, embed_dim // 6) #64
+        self.act2 = nn.GELU() #64
+        
+        self.conv3 = nn.Conv2d(in_channels = embed_dim // 6, out_channels = embed_dim // 6, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim // 6) #64
+        self.linear3 = nn.Linear(embed_dim // 6, 2) #2
+        
         self.out = nn.LogSoftmax(dim=-1)
         
 
     def forward(self, x, policy):
         B, N, C = x.size()
-        local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
-        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
         
         x = x.reshape(B, int(N**0.5), int(N**0.5), C)
-        x = self.act0(self.pool0(self.linear0(self.norm0(x)).permute(0,3,1,2)).permute(0,2,3,1))
-        x = self.act1(self.linear1(self.norm1(x)))
-        x = self.out(self.linear2(x))
+        
+        x = self.norm0(x)
+        x = self.linear0(x)
+        x = self.pool0(x.permute(0,3,1,2)).permute(0,2,3,1)
+        x = self.act0(x)
+        
+        x = self.conv1(x.permute(0,3,1,2)).permute(0,2,3,1)
+        x = self.linear1(x)
+        x = self.act1(x)
+        
+        x = self.conv2(x.permute(0,3,1,2)).permute(0,2,3,1)
+        x = self.linear2(x)
+        x = self.act2(x)
+        
+        x = self.conv3(x.permute(0,3,1,2)).permute(0,2,3,1)
+        x = self.linear3(x)
+        
+        x = self.out(x)
+        
         return x.reshape(B, N, 2)
         
 
@@ -474,7 +480,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
                     
                     # 这一层的训练
-                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * std_decision # B, N, 1
+                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1]# B, N, 1
                     out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
                     
                     # 累加
@@ -483,6 +489,21 @@ class VisionTransformerDiffPruning(nn.Module):
                     out_attns.append(attn)
                     final_decision = hard_keep_decision
                 else:
+                    
+                    """
+                    spatial_x = x[:, 1:]
+                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
+                    
+                    # 这一层的训练
+                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1]# B, N, 1
+                    out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
+                    
+                    # 累加
+                    num_keep_node = int(init_n * self.token_ratio[p_count])
+                    x, attn = blk(x, num_keep_node = num_keep_node) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    out_attns.append(attn)
+                    final_decision = hard_keep_decision
+                    """
                     spatial_x = x[:, 1:]
                     pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
                     score = pred_score[:,:,0]
