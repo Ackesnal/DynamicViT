@@ -156,7 +156,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.pred_mseloss = torch.nn.MSELoss()
         self.token_mseloss = torch.nn.MSELoss()
         self.cut_loss = 0
-        self.cut_weight = 10.0
+        self.cut_weight = 2.0
 
         print('ratio_weight=', ratio_weight, 'distill_weight', distill_weight)
 
