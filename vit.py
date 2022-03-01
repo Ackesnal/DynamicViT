@@ -313,7 +313,7 @@ class PredictorLG(nn.Module):
         self.pool0 = torch.nn.AdaptiveAvgPool2d(14) #384
         self.act0 = nn.GELU() #128
         
-        self.conv1 = nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim) #384
+        self.conv1 = nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim) #384
         self.linear1 = nn.Linear(embed_dim, embed_dim // 3) #128
         self.act1 = nn.GELU() #128
         
@@ -321,7 +321,7 @@ class PredictorLG(nn.Module):
         self.linear2 = nn.Linear(embed_dim // 3, embed_dim // 6) #64
         self.act2 = nn.GELU() #64
         
-        self.conv3 = nn.Conv2d(in_channels = embed_dim // 6, out_channels = embed_dim // 6, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim // 6) #64
+        self.conv3 = nn.Conv2d(in_channels = embed_dim // 6, out_channels = embed_dim // 6, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim // 6) #64
         self.linear3 = nn.Linear(embed_dim // 6, 2) #2
         
         self.out = nn.LogSoftmax(dim=-1)
@@ -489,7 +489,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     x, attn = blk(x, num_keep_node = num_keep_node) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
                     out_attns.append(attn)
                     final_decision = hard_keep_decision
-                    if i % 4 == 3:
+                    if i % 3 == 2:
                         out_features.append(x[:,0,:])
                 else:
                     """
@@ -656,7 +656,7 @@ class VisionTransformerTeacher(nn.Module):
         out_features = []
         for i, blk in enumerate(self.blocks):
             x = blk(x)
-            if i % 4 == 3:
+            if i % 3 == 2:
                 out_features.append(x[:,0,:])
 
         feature = self.norm(x)
