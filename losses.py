@@ -152,6 +152,11 @@ class DistillDiffPruningLoss(torch.nn.Module):
 
         self.ratio_weight = ratio_weight
         self.distill_weight = distill_weight
+        
+        self.pred_mseloss = torch.nn.MSELoss()
+        self.token_mseloss = torch.nn.MSELoss()
+        self.cut_loss = 0
+        self.cut_weight = 5.0
 
         print('ratio_weight=', ratio_weight, 'distill_weight', distill_weight)
 
@@ -169,7 +174,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        pred, token_pred, mask, out_pred_score = outputs
+        pred, token_pred, mask, out_pred_score, out_attns, student_features = outputs
 
         pred_loss = 0.0
 
@@ -180,11 +185,11 @@ class DistillDiffPruningLoss(torch.nn.Module):
             else:
                 pos_ratio = score.mean(1)
             pred_loss = pred_loss + ((pos_ratio - ratio[i]) ** 2).mean()
-
+        
         cls_loss = self.base_criterion(pred, labels)
 
         with torch.no_grad():
-            cls_t, token_t = self.teacher_model(inputs)
+            cls_t, token_t, teacher_features = self.teacher_model(inputs)
 
         cls_kl_loss = F.kl_div(
                 F.log_softmax(pred, dim=-1),
@@ -193,44 +198,45 @@ class DistillDiffPruningLoss(torch.nn.Module):
                 log_target=True
             )
 
-        B, N, C = token_pred.size()
-        assert mask.numel() == B * N
-
-        bool_mask = mask.reshape(B*N) > 0.5
-
-        token_pred = token_pred.reshape(B*N, C)
-        token_t = token_t.reshape(B*N, C)
-
-        if mask.sum() < 0.1:
-            token_kl_loss = token_pred.new(1,).fill_(0.0)
-        else:
-            token_t = token_t[bool_mask]
-            token_pred = token_pred[bool_mask]
-            if self.mse_token:
-                token_kl_loss = torch.pow(token_pred - token_t, 2).mean()
-            else:
-                token_kl_loss = F.kl_div(
-                        F.log_softmax(token_pred, dim=-1),
-                        F.log_softmax(token_t, dim=-1),
-                        reduction='batchmean',
-                        log_target=True
-                    )
+        cut_loss = 0.0
+        for i in range(3):
+            attn_1 = out_attns[3*i+3]
+            attn_2 = out_attns[3*i+4]
+            attn_3 = out_attns[3*i+5]
+            attn = (attn_1+attn_2+attn_3) / 3 # B,N,1
+            
+            score = out_pred_score[i] # B,N
+            attn = attn.squeeze()[:,1:] # B,N
+            attn.requires_grad = False
+            
+            cut_loss = cut_loss + self.pred_mseloss(attn, score)
+        
+        
+        token_kl_loss = 0.0
+        for i in range(len(student_features)):
+            token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(student_features[i], dim=-1),
+                                                     F.log_softmax(teacher_features[i], dim=-1),
+                                                     reduction='batchmean',
+                                                     log_target=True) / len(student_features)
+            
+        token_kl_loss = token_kl_loss + self.token_mseloss(student_features[i], teacher_features[i])
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.ratio_weight * pred_loss / len(self.pruning_loc) + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss
+        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.ratio_weight * pred_loss / len(self.pruning_loc) 
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
             self.ratio_loss += pred_loss.item()
             self.cls_distill_loss += cls_kl_loss.item()
             self.token_distill_loss += token_kl_loss.item()
+            self.cut_loss += cut_loss.item()
             self.count += 1
             if self.count == 100:
-                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cls_kl=%.4f, token_kl=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100))
+                print('loss info: cls_loss=%.4f, ratio_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f' % (self.cls_loss / 100, self.ratio_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100, self.cut_loss/100))
                 self.count = 0
                 self.cls_loss = 0
                 self.ratio_loss = 0
                 self.cls_distill_loss = 0
                 self.token_distill_loss = 0
+                self.cut_loss = 0
         return loss
-
