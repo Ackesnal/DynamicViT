@@ -469,7 +469,9 @@ class VisionTransformerDiffPruning(nn.Module):
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     x, attn = blk(x, num_keep_node = num_keep_node)
                     out_attns.append(attn)
-                    out_features.append(x[:,0,:])
+                    
+                    if i%3==2:
+                        out_features.append(x[:,0,:])
                     
                 else:
                     score = pred_score[:,:,0]
@@ -485,6 +487,8 @@ class VisionTransformerDiffPruning(nn.Module):
                 if self.training:
                     x, attn = blk(x, num_keep_node = num_keep_node)
                     out_attns.append(attn)
+                    if i%3 == 2:
+                        out_features.append(x[:,0,:])
                 else:
                     x = blk(x)
 
@@ -606,7 +610,7 @@ class VisionTransformerTeacher(nn.Module):
         out_features = []
         for i, blk in enumerate(self.blocks):
             x = blk(x)
-            if i % 3 == 0:
+            if i % 3 == 2:
                 out_features.append(x[:,0,:])
 
         feature = self.norm(x)
