@@ -313,7 +313,7 @@ class PredictorLG(nn.Module):
         self.pool0 = torch.nn.AdaptiveAvgPool2d(14) #384
         self.act0 = nn.GELU() #128
         
-        self.conv1 = nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim) #384
+        self.conv1 = nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim) #384
         self.linear1 = nn.Linear(embed_dim, embed_dim // 3) #128
         self.act1 = nn.GELU() #128
         
@@ -321,7 +321,7 @@ class PredictorLG(nn.Module):
         self.linear2 = nn.Linear(embed_dim // 3, embed_dim // 6) #64
         self.act2 = nn.GELU() #64
         
-        self.conv3 = nn.Conv2d(in_channels = embed_dim // 6, out_channels = embed_dim // 6, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim // 6) #64
+        self.conv3 = nn.Conv2d(in_channels = embed_dim // 6, out_channels = embed_dim // 6, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim // 6) #64
         self.linear3 = nn.Linear(embed_dim // 6, 2) #2
         
         self.out = nn.LogSoftmax(dim=-1)
@@ -468,6 +468,7 @@ class VisionTransformerDiffPruning(nn.Module):
         p_count = 0
         out_pred_prob = []
         out_attns = []
+        out_features = []
         init_n = 14 * 14
         prev_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 记录上一次的选择结果
         std_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 标准选择，即全选
@@ -488,8 +489,9 @@ class VisionTransformerDiffPruning(nn.Module):
                     x, attn = blk(x, num_keep_node = num_keep_node) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
                     out_attns.append(attn)
                     final_decision = hard_keep_decision
+                    if i % 4 == 3:
+                        out_features.append(x[:,0,:])
                 else:
-                    
                     """
                     spatial_x = x[:, 1:]
                     pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
@@ -528,10 +530,13 @@ class VisionTransformerDiffPruning(nn.Module):
                     
                     x = original_x
                     
+                    
                 p_count = p_count +1
                 
             else:
                 x = blk(x)
+                if i % 3 == 2:
+                    out_features.append(x[:,0,:])
             
         
         x = self.norm(x)
@@ -541,7 +546,7 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, final_decision.detach(), out_pred_prob, out_attns
+                return x, features, final_decision.detach(), out_pred_prob, out_attns, out_features
             else:
                 return x, out_pred_prob, out_attns
         else:
@@ -648,15 +653,18 @@ class VisionTransformerTeacher(nn.Module):
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
+        out_features = []
         for i, blk in enumerate(self.blocks):
             x = blk(x)
+            if i % 4 == 3:
+                out_features.append(x[:,0,:])
 
         feature = self.norm(x)
         cls = feature[:, 0]
         cls = self.pre_logits(cls)
         tokens = cls
         cls = self.head(cls)
-        return cls, tokens
+        return cls, tokens, out_features
 
 def resize_pos_embed(posemb, posemb_new):
     # Rescale the grid of position embeddings when loading from state_dict. Adapted from

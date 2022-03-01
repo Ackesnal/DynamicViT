@@ -205,7 +205,7 @@ def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_
     if step < warming_up_step:
         backbone_lr = 0
     else:
-        backbone_lr = min(init_lr * 0.05, cos_lr)
+        backbone_lr = min(init_lr * 0.1, cos_lr)
     print('## Using lr  %.7f for BACKBONE, cosine lr = %.7f for PREDICTOR' % (backbone_lr, cos_lr))
     for param_group in param_groups:
         if param_group['name'] == 'predictor':
@@ -289,10 +289,10 @@ def main(args):
 
     if args.arch == 'deit_small':
         # PRUNING_LOC = [3,6,9]
-        PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
+        PRUNING_LOC = [i for i in range(0,12)] # 每层都加一个predictor
         KEEP_RATE = []
         for i in range(3):
-            KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
+            KEEP_RATE.extend([base_rate**(j) for j in range(4)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = VisionTransformerDiffPruning(

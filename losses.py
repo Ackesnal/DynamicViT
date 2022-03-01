@@ -146,7 +146,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, teacher_model, base_criterion: torch.nn.Module, ratio_weight=0.5, distill_weight=10.0, dynamic=False, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, mse_token=False, print_mode=True):
+    def __init__(self, teacher_model, base_criterion: torch.nn.Module, ratio_weight=0.5, distill_weight=5.0, dynamic=False, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, mse_token=False, print_mode=True):
         super().__init__()
         self.teacher_model = teacher_model
         self.base_criterion = base_criterion
@@ -187,7 +187,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        pred, token_pred, mask, out_pred_score, out_attns = outputs
+        pred, token_pred, mask, out_pred_score, out_attns, student_features = outputs
 
         pred_loss = 0.0
 
@@ -202,7 +202,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         cls_loss = self.base_criterion(pred, labels)
 
         with torch.no_grad():
-            cls_t, token_t = self.teacher_model(inputs)
+            cls_t, token_t, teacher_features = self.teacher_model(inputs)
 
         cls_kl_loss = F.kl_div(
                 F.log_softmax(pred, dim=-1),
@@ -217,7 +217,15 @@ class DistillDiffPruningLoss(torch.nn.Module):
             attn = attn.squeeze()[:,1:]
             cut_loss = cut_loss + self.pred_mseloss(attn, score)
         
-        token_kl_loss = self.token_mseloss(token_pred, token_t)
+        
+        token_kl_loss = 0.0
+        for i in range(len(student_features)):
+            token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(student_features[i], dim=-1),
+                                                     F.log_softmax(teacher_features[i], dim=-1),
+                                                     reduction='batchmean',
+                                                     log_target=True) / len(student_features)
+            
+        token_kl_loss = token_kl_loss + self.token_mseloss(student_features[i], teacher_features[i])
         
         # print(cls_loss, pred_loss)
         loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.ratio_weight * pred_loss / len(self.pruning_loc) 
