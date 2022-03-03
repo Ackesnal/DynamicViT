@@ -36,7 +36,7 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--arch', default='deit_small', type=str, help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
-    parser.add_argument('--distillw', type=float, default=0.5, help='distill rate (default: 0.5)')
+    parser.add_argument('--distillw', type=float, default=10.0, help='distill rate (default: 0.5)')
     parser.add_argument('--ratiow', type=float, default=2.0, metavar='PCT', help='ratio rate (default: 2.0)')
     parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
                         help='Dropout rate (default: 0.)')
@@ -205,7 +205,7 @@ def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_
     if step < warming_up_step:
         backbone_lr = 0
     else:
-        backbone_lr = min(init_lr * 0.1, cos_lr)
+        backbone_lr = min(init_lr * 0.05, cos_lr)
     print('## Using lr  %.7f for BACKBONE, cosine lr = %.7f for PREDICTOR' % (backbone_lr, cos_lr))
     for param_group in param_groups:
         if param_group['name'] == 'predictor':
@@ -289,10 +289,10 @@ def main(args):
 
     if args.arch == 'deit_small':
         # PRUNING_LOC = [3,6,9]
-        PRUNING_LOC = [i for i in range(0,12)] # 每层都加一个predictor
+        PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
         KEEP_RATE = []
         for i in range(3):
-            KEEP_RATE.extend([base_rate**(j) for j in range(4)])
+            KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = VisionTransformerDiffPruning(
