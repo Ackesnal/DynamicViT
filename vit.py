@@ -492,6 +492,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     if i % 3 == 2:
                         out_features.append(x[:,0,:])
                 else:
+                    """
                     spatial_x = x[:, 1:]
                     pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
                     
@@ -529,7 +530,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     
                     x = original_x
                     
-                    """
+                    
                     
                 p_count = p_count +1
                 
