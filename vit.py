@@ -196,6 +196,7 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
             return x
         else:
+            attn_rt = attn.mean(1) # B,N,N
             attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
@@ -209,7 +210,7 @@ class Attention(nn.Module):
             attn_mask = attn_mask.reshape(B,N,1)
             attn_mask.requires_grad = False
             
-            return x, attn_mask
+            return x, attn_mask, attn_rt
 
 
 class Block(nn.Module):
@@ -228,10 +229,10 @@ class Block(nn.Module):
 
     def forward(self, x, num_keep_node = None):
         if num_keep_node is not None:
-            tmp, attn_mask = self.attn(self.norm1(x), num_keep_node = num_keep_node)
+            tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
             x = x + self.drop_path(tmp) * attn_mask
             x = x + self.drop_path(self.mlp(self.norm2(x))) * attn_mask
-            return x, attn_mask
+            return x, attn_mask, attn
         else:
             x = x + self.drop_path(self.attn(self.norm1(x))) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
@@ -422,10 +423,9 @@ class VisionTransformerDiffPruning(nn.Module):
         # Classifier head
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
-        predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-        # predictor_list = [PredictorLG(embed_dim) for _ in range(depth)]
+        # predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
 
-        self.score_predictor = nn.ModuleList(predictor_list)
+        # self.score_predictor = nn.ModuleList(predictor_list)
 
         self.distill = distill
 
@@ -466,79 +466,29 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.pos_drop(x)
 
         p_count = 0
-        out_pred_prob = []
         out_attns = []
+        out_attn_masks = []
         out_features = []
-        init_n = 14 * 14
-        prev_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 记录上一次的选择结果
-        std_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 标准选择，即全选
-        policy = torch.ones(B, init_n + 1, 1, dtype=x.dtype, device=x.device)
-        pred_score = 0
+        init_n = x.shape[1] - 1
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
                 if self.training:
-                    spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
-                    
-                    # 这一层的训练
-                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1]# B, N, 1
-                    out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
-                    
-                    # 累加
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn = blk(x, num_keep_node = num_keep_node) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    x, attn_mask, attn = blk(x, num_keep_node = num_keep_node) # x: B,(N+1),C  attn: B,N,1 
+                    out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
-                    final_decision = hard_keep_decision
-                    if i % 3 == 2:
-                        out_features.append(x[:,0,:])
+                    out_features.append(x)
+                    #if i % 3 == 2:
+                    #    out_features.append(x[:,0,:])
                 else:
-                    """
-                    spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
-                    
-                    # 这一层的训练
-                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1]# B, N, 1
-                    out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
-                    
-                    # 累加
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn = blk(x, num_keep_node = num_keep_node) # + (1 - policy) @ torch.mean(x, dim=1, keepdim=True)
+                    x, attn_mask, attn = blk(x, num_keep_node = num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attns.append(attn)
-                    final_decision = hard_keep_decision
-                    """
-                    spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
-                    score = pred_score[:,:,0]
-                    num_keep_node = int(init_n * self.token_ratio[p_count])
-                    keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                    cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                    now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
-                    
-                    original_x = x
-                    
-                    # pruned MHSA
-                    x = batch_index_select(x, now_policy) # B, N*ratio, C
-                    x = blk(x)
-                    
-                    # 累加
-                    # original_x = original_x + torch.mean(original_x, dim=1, keepdim=True) # B, 1, C
-                    
-                    # 把idle部分拼回去
-                    index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-                    now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
-                    original_x[now_policy.cpu().numpy()] = x.reshape(B*(num_keep_node+1), -1)
-                    
-                    x = original_x
-                    
-                    
-                    
-                p_count = p_count +1
-                
+                    out_features.append(x)
             else:
                 x = blk(x)
-                if i % 3 == 2:
-                    out_features.append(x[:,0,:])
-            
+                #if i % 3 == 2:
+                #    out_features.append(x[:,0,:])
         
         x = self.norm(x)
         x = x[:, 0]
@@ -547,9 +497,9 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, final_decision.detach(), out_pred_prob, out_attns, out_features
+                return x, features, out_attns, out_attn_masks, out_features
             else:
-                return x, out_pred_prob, out_attns
+                return x, out_attns, out_attn_masks, out_features
         else:
             return x
 
