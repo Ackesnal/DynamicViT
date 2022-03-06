@@ -128,50 +128,62 @@ class Attention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(self.head_dim* self.num_heads, dim)
         self.proj_drop = nn.Dropout(proj_drop)
-
-    def softmax_with_policy(self, attn, policy, eps=1e-6):
-        B, N, _ = policy.size()
-        B, H, N, N = attn.size()
-        attn_policy = policy.reshape(B, 1, 1, N)  # * policy.reshape(B, 1, N, 1)
-        eye = torch.eye(N, dtype=attn_policy.dtype, device=attn_policy.device).view(1, 1, N, N)
-        attn_policy = attn_policy + (1.0 - attn_policy) * eye
-        max_att = torch.max(attn, dim=-1, keepdim=True)[0]
-        attn = attn - max_att
-        # attn = attn.exp_() * attn_policy
-        # return attn / attn.sum(dim=-1, keepdim=True)
-
-        # for stable training
-        attn = attn.to(torch.float32).exp_() * attn_policy.to(torch.float32)
-        attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
-        return attn.type_as(max_att)
-
-    def forward(self, x, policy, padding_mask=None):
+    
+    def softmax_with_top_attn(self, attn, num_keep_node):
+        B, H, N, N = attn.shape
+        
+        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+        cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+        
+        attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
+        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+        dim2 = top_attn.reshape(-1) # B*(K+1)
+        attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
+        attn_mask = attn_mask * (-100000.0) # 降低attn的比重
+        attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
+        
+        attn = attn + attn_mask
+        
+        return attn.softmax(-1), top_attn
+        
+    def forward(self, x, num_keep_node = None, test = False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        # B,heads,N,C/heads 
         q, k, v = qkv[0], qkv[1], qkv[2]
         
         # trick here to make q@k.t more stable
         attn = ((q * self.scale) @ k.transpose(-2, -1))
-        if padding_mask is not None:
-            # attn = attn.view(B, self.num_heads, N, N)
-            # attn = attn.masked_fill(
-            #     padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
-            #     float("-inf"),
-            # )
-            # attn_float = attn.softmax(dim=-1, dtype=torch.float32)
-            # attn = attn_float.type_as(attn)
-            raise NotImplementedError
+        
+        if test == True:
+            top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+            top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+            return top_attn
+        
+        if num_keep_node is None:
+            attn = attn.softmax(dim=-1)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            return x
         else:
-            if policy is None:
-                attn = attn.softmax(dim=-1)
-            else:
-                attn = self.softmax_with_policy(attn, policy)
-        attn = self.attn_drop(attn)
+            attn_rt = attn.mean(1) # B,N,N
+            attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            
+            # generate the top attn mask
+            attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+            dim2 = top_attn.reshape(-1) # B*(K+1)
+            attn_mask[dim1, dim2] = 1.0
+            attn_mask = attn_mask.reshape(B,N,1)
+            attn_mask.requires_grad = False
+            
+            return x, attn_mask, attn_rt
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, self.head_dim* self.num_heads)
-        x = self.proj(x)
-        x = self.proj_drop(x)
         return x
         
 class Block(nn.Module):
@@ -192,10 +204,16 @@ class Block(nn.Module):
         self.norm2 = norm_layer(dim)
         self.mlp = Mlp(in_features=dim, hidden_features=self.mlp_hidden_dim, act_layer=act_layer, drop=drop, group=group)
 
-    def forward(self, x, policy=None, padding_mask=None):
-        x = x + self.drop_path(self.attn(self.norm1(x), policy, padding_mask))/self.skip_lam
-        x = x + self.drop_path(self.mlp(self.norm2(x)))/self.skip_lam
-        return x
+    def forward(self, x, num_keep_node = None, test = False):
+        if num_keep_node is not None:
+            tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node)
+            x = x + self.drop_path(tmp)/self.skip_lam * attn_mask
+            x = x + self.drop_path(self.mlp(self.norm2(x)))/self.skip_lam * attn_mask
+            return x, attn_mask, attn
+        else:
+            x = x + self.drop_path(self.attn(self.norm1(x)))/self.skip_lam
+            x = x + self.drop_path(self.mlp(self.norm2(x)))/self.skip_lam
+            return x
 
     def flops(self, s):
         heads = self.attn.num_heads
@@ -509,34 +527,6 @@ def get_dpr(drop_path_rate,depth,drop_path_decay='linear'):
         dpr=drop_path_rate
     return dpr
 
-class PredictorLG(nn.Module):
-    """ Image to Patch Embedding
-    """
-    def __init__(self, embed_dim=384):
-        super().__init__()
-        self.in_conv = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU()
-        )
-
-        self.out_conv = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.GELU(),
-            nn.Linear(embed_dim // 2, embed_dim // 4),
-            nn.GELU(),
-            nn.Linear(embed_dim // 4, 2),
-            nn.LogSoftmax(dim=-1)
-        )
-
-    def forward(self, x, policy):
-        x = self.in_conv(x)
-        B, N, C = x.size()
-        local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
-        return self.out_conv(x)
-
 class LVViTDiffPruning(nn.Module):
     """ Vision Transformer with tricks
     Arguements:
@@ -594,12 +584,7 @@ class LVViTDiffPruning(nn.Module):
         
         self.return_dense=return_dense
         self.mix_token=mix_token
-
         
-        predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-
-        self.score_predictor = nn.ModuleList(predictor_list)
-
         self.pruning_loc = pruning_loc
         self.token_ratio = token_ratio
 
@@ -648,43 +633,27 @@ class LVViTDiffPruning(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-
-
+        
         p_count = 0
-        out_pred_prob = []
-        init_n = 14 * 14
-        prev_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device)
-        policy = torch.ones(B, init_n + 1, 1, dtype=x.dtype, device=x.device)
+        out_attns = []
+        out_attn_masks = []
+        out_features = []
+        init_n = x.shape[1] - 1
         if self.viz_mode:
             decisions = [[] for _ in self.pruning_loc]
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
-                spatial_x = x[:, 1:]
-                pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
                 if self.training:
-                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * prev_decision
-                    out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
-                    cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
-                    policy = torch.cat([cls_policy, hard_keep_decision], dim=1)
-                    x = blk(x, policy=policy)
-                    prev_decision = hard_keep_decision
-                else:
-                    score = pred_score[:,:,0]
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                    if self.viz_mode:
-                        decisions[p_count].append(keep_policy)
-                    cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                    now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1)
-                    x = batch_index_select(x, now_policy)
-                    prev_decision = batch_index_select(prev_decision, keep_policy)
-                    x = blk(x)
+                    x, attn_mask, attn = blk(x, num_keep_node = num_keep_node)
+                    out_attn_masks.append(attn_mask)
+                    out_attns.append(attn)
+                else:
+                    num_keep_node = int(init_n * self.token_ratio[p_count])
+                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count += 1
             else:
-                if self.training:
-                    x = blk(x, policy)
-                else:
-                    x = blk(x)
+                x = blk(x)
         
         x = self.norm(x)
         x_cls = self.head(x[:,0])
@@ -693,9 +662,9 @@ class LVViTDiffPruning(nn.Module):
 
         if self.training:
             if self.distill:
-                return x_cls, x_aux, prev_decision.detach(), out_pred_prob
+                return x_cls, x_aux, out_attns, out_attn_masks, out_features
             else:
-                return final_pred, out_pred_prob
+                return final_pred, out_attns, out_attn_masks, out_features
         else:
             if self.viz_mode:
                 return final_pred, decisions
@@ -809,4 +778,4 @@ class LVViT_Teacher(nn.Module):
         x = self.norm(x)
         x_cls = self.head(x[:,0])
         x_aux = self.aux_head(x[:,1:])
-        return x_cls, x_aux
+        return x_cls, x_aux, None

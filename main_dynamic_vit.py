@@ -36,7 +36,7 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--arch', default='deit_small', type=str, help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
-    parser.add_argument('--distillw', type=float, default=10.0, help='distill rate (default: 0.5)')
+    parser.add_argument('--distillw', type=float, default=0.5, help='distill rate (default: 0.5)')
     parser.add_argument('--ratiow', type=float, default=2.0, metavar='PCT', help='ratio rate (default: 2.0)')
     parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
                         help='Dropout rate (default: 0.)')

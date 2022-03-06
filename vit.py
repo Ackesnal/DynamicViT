@@ -182,13 +182,19 @@ class Attention(nn.Module):
         
         return attn.softmax(-1), top_attn
 
-    def forward(self, x, num_keep_node = None):
+    def forward(self, x, num_keep_node = None, test = False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
-
+        
+        if test == True:
+            top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+            top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+            return top_attn
+            
         if num_keep_node is None:
             attn = attn.softmax(dim=-1)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -227,7 +233,18 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, num_keep_node = None):
+    def forward(self, x, num_keep_node = None, test = False):
+        if test == True:
+            B, N, C = x.shape
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True)
+            top_tokens = batch_index_select(x, top_attns)
+            top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
+            top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
+            index = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            top_attns = torch.stack((index, top_attns.reshape(-1))) # 2, B*(N*ratio+1)
+            x[top_attns.cpu().numpy()] = top_tokens.reshape(B*(num_keep_node+1), -1)
+            return x
+            
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
             x = x + self.drop_path(tmp) * attn_mask
@@ -477,14 +494,11 @@ class VisionTransformerDiffPruning(nn.Module):
                     x, attn_mask, attn = blk(x, num_keep_node = num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
-                    out_features.append(x)
                     #if i % 3 == 2:
                     #    out_features.append(x[:,0,:])
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = blk(x, num_keep_node = num_keep_node) # x: B,(N+1),C  attn: B,N,1 
-                    out_attns.append(attn)
-                    out_features.append(x)
+                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
             else:
                 x = blk(x)
                 #if i % 3 == 2:
@@ -607,8 +621,8 @@ class VisionTransformerTeacher(nn.Module):
         out_features = []
         for i, blk in enumerate(self.blocks):
             x = blk(x)
-            if i % 3 == 2:
-                out_features.append(x[:,0,:])
+            #if i % 3 == 2:
+            #    out_features.append(x[:,0,:])
 
         feature = self.norm(x)
         cls = feature[:, 0]
