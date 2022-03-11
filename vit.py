@@ -26,6 +26,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 
 from utils import batch_index_select
 
@@ -491,7 +492,7 @@ class VisionTransformerDiffPruning(nn.Module):
             if i in self.pruning_loc:
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = blk(x, num_keep_node = num_keep_node) # x: B,(N+1),C  attn: B,N,1 
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                     #if i % 3 == 2:
@@ -499,8 +500,9 @@ class VisionTransformerDiffPruning(nn.Module):
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                p_count = p_count + 1
             else:
-                x = blk(x)
+                x = checkpoint.checkpoint(blk, x)
                 #if i % 3 == 2:
                 #    out_features.append(x[:,0,:])
         
@@ -620,7 +622,7 @@ class VisionTransformerTeacher(nn.Module):
 
         out_features = []
         for i, blk in enumerate(self.blocks):
-            x = blk(x)
+            x = checkpoint.checkpoint(blk, x)
             #if i % 3 == 2:
             #    out_features.append(x[:,0,:])
 

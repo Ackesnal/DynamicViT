@@ -6,6 +6,7 @@ import torch.nn.init as init
 import torch.nn.functional as F
 import math
 from timm.models.layers import DropPath, to_2tuple
+import torch.utils.checkpoint as checkpoint
 
 import torch
 import torch.nn as nn
@@ -645,12 +646,13 @@ class LVViTDiffPruning(nn.Module):
             if i in self.pruning_loc:
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = blk(x, num_keep_node = num_keep_node)
+                    # x, attn_mask, attn = blk(x, num_keep_node = num_keep_node)
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node)
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                    x, _, _ = blk(x, num_keep_node, True) # x: B,(N+1),C  attn: B,N,1 
                 p_count += 1
             else:
                 x = blk(x)
@@ -773,7 +775,7 @@ class LVViT_Teacher(nn.Module):
         x = self.pos_drop(x)
 
         for i, blk in enumerate(self.blocks):
-            x = blk(x)
+            x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
         x_cls = self.head(x[:,0])

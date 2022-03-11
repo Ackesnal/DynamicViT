@@ -317,7 +317,10 @@ def main(args):
             model_t.to(device)
             print('sucessfully loaded from pre-trained weights for the teach model')
     elif args.arch == 'lvvit_s':
-        PRUNING_LOC = [4,8,12] 
+        PRUNING_LOC = [i for i in range(4,16)] # 每层都加一个predictor
+        KEEP_RATE = []
+        for i in range(3):
+            KEEP_RATE.extend([base_rate**(i+1) for _ in range(4)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = LVViTDiffPruning(
@@ -343,7 +346,10 @@ def main(args):
             model_t.to(device)
             print('sucessfully loaded from pre-trained weights for the teach model')
     elif args.arch == 'lvvit_m':
-        PRUNING_LOC = [5,10,15] 
+        PRUNING_LOC = [i for i in range(5,20)] # 每层都加一个predictor
+        KEEP_RATE = []
+        for i in range(3):
+            KEEP_RATE.extend([base_rate**(i+1) for _ in range(5)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = LVViTDiffPruning(
