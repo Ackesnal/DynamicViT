@@ -85,10 +85,8 @@ class DiffPruningLoss(torch.nn.Module):
         
         self.cls_weight = clf_weight
         self.ratio_weight = ratio_weight
-        self.cut_weight = 2.0
+        self.cut_weight = 10.0
         self.spatial_weight = 2.0
-        
-        self.mseloss = torch.nn.MSELoss()
         
         max_size = 14
         coords_h = torch.arange(max_size)
@@ -99,7 +97,12 @@ class DiffPruningLoss(torch.nn.Module):
         relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
         relative_position_index = torch.sqrt(relative_coords[:, :, 0] ** 2 + relative_coords[:, :, 1] ** 2)
         relative_position_index = relative_position_index.reshape(1, max_size*max_size, max_size*max_size)
-        self.relative_dist = relative_position_index.softmax(dim = -1) # N, N
+        relative_dist = relative_position_index / relative_position_index.max() # N, N
+        padding_1 = torch.zeros(1, 1, max_size**2)
+        padding_2 = torch.zeros(1, max_size**2+1, 1)
+        relative_dist = torch.cat((padding_2, torch.cat((padding_1, relative_dist), dim = 1)), dim = 2)
+        sigma = 0.6
+        self.relative_dist = torch.exp(-relative_dist/(2*sigma**2))
         self.relative_dist.requires_grad = False
 
     def forward(self, inputs, outputs, labels):
@@ -117,32 +120,40 @@ class DiffPruningLoss(torch.nn.Module):
         # cut loss
         cut_loss = 0.0
         spatial_loss = 0.0
+        W_weight = self.relative_dist.to(out_attns[0].device)
         for i, mask in enumerate(out_attn_masks):
-            B, N, _ = mask.shape
+            W = out_attns[i].softmax(-1)
+            B, H, N, _ = W.shape
+            W = W * W_weight.reshape(1,1,N,N) # B,H,N,N
             K = mask.squeeze()[0].mean()
-            W = F.softmax(out_attns[i], dim = -1) # B,N,N
             
             diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
-            samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
+            # samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
+            diffcut[:,:,0] = 0
+            samecut = 1 - diffcut
             
-            # cut
-            cut = (diffcut*W) / 2 # 组间距离
-            assoc = (samecut*W) / 2 # 组内距离
-            normalized_cut = F.mse_loss(cut.sum(-1), torch.zeros(B, N, dtype=cut.dtype, device=cut.device)) + F.mse_loss(assoc.sum(-1), mask.squeeze()) # B
+            # relationship
+            inter = diffcut.reshape(B,1,N,N)*W # 组间距离
+            intra = samecut.reshape(B,1,N,N)*W # 组内距离
+            # normalized_cut = F.mse_loss(cut.sum(-1), torch.zeros(B, N, dtype=cut.dtype, device=cut.device)) + F.mse_loss(assoc.sum(-1), mask.detach().squeeze()) # B
+            # cut_loss = cut_loss + normalized_cut
+            inter_loss = F.mse_loss(inter.sum(-1), torch.zeros(B, H, N, device=inter.device)) 
+            intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B, H, N, device=intra.device))
             
-            cut_loss = cut_loss + normalized_cut
+            cut_loss = cut_loss + inter_loss + intra_loss
             
-            # spatial association
-            spatial_connect = mask.reshape(B,N)[:,1:] - W[:,0,1:].detach() + W[:,0,1:]
+            # spatial associationc
+            spatial_connect = mask.reshape(B, N)[:,1:]
             spatial_connect = spatial_connect.reshape(B, N-1, 1) * spatial_connect.reshape(B, 1, N-1)
-            spatial_associa = spatial_connect * self.relative_dist.to(spatial_connect.device) / 2
-            spatial_loss = spatial_loss + spatial_associa.sum(-1).mean()
+            spatial_associa = spatial_connect * W_weight[0:1, 1:, 1:]
+            ratio = W_weight[0, 1, 1:].sort()[0][0:int(K.item()*(N-1))].sum()
+            spatial_loss = spatial_loss + F.mse_loss(spatial_associa.sum(-1).mean(-1), torch.ones(B, device=spatial_associa.device)*ratio) / len(self.pruning_loc)
+            
         
         # classification loss
         cls_loss = self.base_criterion(pred, labels)
         
-        print(cls_loss, cut_loss, spatial_loss)
-        loss = self.cls_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.spatial_weight * spatial_loss / len(self.pruning_loc)
+        loss = self.cls_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) # + self.spatial_weight * spatial_loss / len(self.pruning_loc)
         
         if self.print_mode:
             self.cls_loss += cls_loss.item()
@@ -187,6 +198,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         self.spatial_loss = 0.0
         
+        """
         max_size = 14
         coords_h = torch.arange(max_size)
         coords_w = torch.arange(max_size)
@@ -203,6 +215,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         sigma = 0.6
         self.relative_dist = torch.exp(-relative_dist/(2*sigma**2))
         self.relative_dist.requires_grad = False
+        """
         """
         n = 14
         spatial_mask = torch.zeros(n**2, n, n)
@@ -227,35 +240,34 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # cut loss
         cut_loss = 0.0
         spatial_loss = 0.0
-        W_weight = self.relative_dist.to(out_attns[0].device)
         for i, mask in enumerate(out_attn_masks):
             W = out_attns[i].softmax(-1)
             B, H, N, _ = W.shape
-            W = W * W_weight.reshape(1,1,N,N) # B,H,N,N
-            K = mask.squeeze()[0].mean()
+            # K = mask.squeeze()[0].mean()
             
-            diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
-            # samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
-            diffcut[:,:,0] = 0
-            samecut = 1 - diffcut
+            # diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+            samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
+            # diffcut[:,:,0] = 0
+            # samecut = 1 - diffcut
             
             # relationship
-            inter = diffcut.reshape(B,1,N,N)*W # 组间距离
-            intra = samecut.reshape(B,1,N,N)*W # 组内距离
+            # inter = diffcut.reshape(B,1,N,N)*W # 组间距离
+            intra = samecut.reshape(B,1,N,N) * W # 组内距离
             # normalized_cut = F.mse_loss(cut.sum(-1), torch.zeros(B, N, dtype=cut.dtype, device=cut.device)) + F.mse_loss(assoc.sum(-1), mask.detach().squeeze()) # B
             # cut_loss = cut_loss + normalized_cut
-            inter_loss = F.mse_loss(inter.sum(-1), torch.zeros(B, H, N, device=inter.device)) 
-            intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B, H, N, device=intra.device))
+            # inter_loss = F.mse_loss(inter.sum(-1), torch.zeros(B, H, N, device=inter.device)) 
+            intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B, H, N, device=intra.device) * mask.detach().reshape(B,1,N).expand(B,H,N))
             
-            cut_loss = cut_loss + inter_loss + intra_loss
+            cut_loss = cut_loss + intra_loss #+ inter_loss 
             
+            """
             # spatial associationc
             spatial_connect = mask.reshape(B, N)[:,1:]
             spatial_connect = spatial_connect.reshape(B, N-1, 1) * spatial_connect.reshape(B, 1, N-1)
             spatial_associa = spatial_connect * W_weight[0:1, 1:, 1:]
             ratio = W_weight[0, 1, 1:].sort()[0][0:int(K.item()*(N-1))].sum()
             spatial_loss = spatial_loss + F.mse_loss(spatial_associa.sum(-1).mean(-1), torch.ones(B, device=spatial_associa.device)*ratio) / len(self.pruning_loc)
-            
+            """
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
@@ -297,7 +309,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             self.cls_distill_loss += cls_kl_loss.item()
             self.token_distill_loss += token_kl_loss.item()
             self.cut_loss += cut_loss.item()
-            self.spatial_loss += spatial_loss.item()
+            # self.spatial_loss += spatial_loss.item()
             self.count += 1
             if self.count == 100:
                 print('loss info: cls_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f, spatial_loss=%.4f' % (self.cls_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100, self.cut_loss/100, self.spatial_loss / 100))
