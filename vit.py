@@ -168,12 +168,12 @@ class Attention(nn.Module):
     def softmax_with_top_attn(self, attn, num_keep_node):
         B, H, N, N = attn.shape
         
-        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-        cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-        top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :(num_keep_node+1)] # B, K+1
+        pred_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        top_attn = torch.cat([pred_attn, top_attn + 1], dim = 1) # B, K+2
         
         attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
-        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
         dim2 = top_attn.reshape(-1) # B*(K+1)
         attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
         attn_mask = attn_mask * (-100000.0) # 降低attn的比重
@@ -191,9 +191,9 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * self.scale
         
         if test == True:
-            top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :(num_keep_node+1)] # B, K
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+            top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+2
             return top_attn
             
         if num_keep_node is None:
@@ -211,8 +211,8 @@ class Attention(nn.Module):
             
             # generate the top attn mask
             attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
-            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
-            dim2 = top_attn.reshape(-1) # B*(K+1)
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
+            dim2 = top_attn.reshape(-1) # B*(K+2)
             attn_mask[dim1, dim2] = 1.0
             attn_mask = attn_mask.reshape(B,N,1)
             attn_mask.requires_grad = False
@@ -241,9 +241,9 @@ class Block(nn.Module):
             top_tokens = batch_index_select(x, top_attns)
             top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
-            index = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-            top_attns = torch.stack((index, top_attns.reshape(-1))) # 2, B*(N*ratio+1)
-            x[top_attns.cpu().numpy()] = top_tokens.reshape(B*(num_keep_node+1), -1)
+            index = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
+            top_attns = torch.stack((index, top_attns.reshape(-1))) # 2, B*(N*ratio+2)
+            x[top_attns.cpu().numpy()] = top_tokens.reshape(B*(num_keep_node+2), -1)
             return x
             
         if num_keep_node is not None:
@@ -318,59 +318,7 @@ class HybridEmbed(nn.Module):
         if isinstance(x, (list, tuple)):
             x = x[-1]  # last feature if backbone outputs list/tuple of features
         x = self.proj(x).flatten(2).transpose(1, 2)
-        return x
-
-
-class PredictorLG(nn.Module):
-    """ Image to Patch Embedding
-    """
-    def __init__(self, embed_dim=384):
-        super().__init__()
-        
-        self.norm0 = nn.LayerNorm(embed_dim) #384
-        self.linear0 = nn.Linear(embed_dim, embed_dim) #384
-        self.pool0 = torch.nn.AdaptiveAvgPool2d(14) #384
-        self.act0 = nn.GELU() #128
-        
-        self.conv1 = nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim) #384
-        self.linear1 = nn.Linear(embed_dim, embed_dim // 3) #128
-        self.act1 = nn.GELU() #128
-        
-        self.conv2 = nn.Conv2d(in_channels = embed_dim // 3, out_channels = embed_dim // 3, kernel_size = 5, stride = 1, padding = 2, groups = embed_dim // 3) #128
-        self.linear2 = nn.Linear(embed_dim // 3, embed_dim // 6) #64
-        self.act2 = nn.GELU() #64
-        
-        self.conv3 = nn.Conv2d(in_channels = embed_dim // 6, out_channels = embed_dim // 6, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim // 6) #64
-        self.linear3 = nn.Linear(embed_dim // 6, 2) #2
-        
-        self.out = nn.LogSoftmax(dim=-1)
-        
-
-    def forward(self, x, policy):
-        B, N, C = x.size()
-        
-        x = x.reshape(B, int(N**0.5), int(N**0.5), C)
-        
-        x = self.norm0(x)
-        x = self.linear0(x)
-        x = self.pool0(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.act0(x)
-        
-        x = self.conv1(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.linear1(x)
-        x = self.act1(x)
-        
-        x = self.conv2(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.linear2(x)
-        x = self.act2(x)
-        
-        x = self.conv3(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.linear3(x)
-        
-        x = self.out(x)
-        
-        return x.reshape(B, N, 2)
-        
+        return x     
 
 class VisionTransformerDiffPruning(nn.Module):
     """ Vision Transformer
@@ -440,11 +388,7 @@ class VisionTransformerDiffPruning(nn.Module):
 
         # Classifier head
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
-
-        # predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-
-        # self.score_predictor = nn.ModuleList(predictor_list)
-
+        
         self.distill = distill
 
         self.pruning_loc = pruning_loc
@@ -482,6 +426,8 @@ class VisionTransformerDiffPruning(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
+        pred_tokens = self.cls_token.detach().copy().expand(B, -1, -1)
+        x = torch.cat((pred_tokens, x), dim=1)
 
         p_count = 0
         out_attns = []
@@ -495,8 +441,6 @@ class VisionTransformerDiffPruning(nn.Module):
                     x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
-                    #if i % 3 == 2:
-                    #    out_features.append(x[:,0,:])
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
@@ -507,7 +451,7 @@ class VisionTransformerDiffPruning(nn.Module):
                 #    out_features.append(x[:,0,:])
         
         x = self.norm(x)
-        x = x[:, 0]
+        x = x[:, 1]
         x = self.pre_logits(x)
         features = x
         x = self.head(x)
