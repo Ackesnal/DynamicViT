@@ -178,8 +178,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # cut loss
         cut_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
-            B, N, _ = mask.shape
             W = out_attns[i].softmax(-1) # B,H,N,N
+            B, H, N, _ = W.shape
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
             intra = W * samecut.reshape(B,1,N,N)
             intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B,H,N, device=intra.device) * mask.detach().reshape(B,1,N).expand(B,H,N))
