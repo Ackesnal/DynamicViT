@@ -191,6 +191,7 @@ class Attention(nn.Module):
             q_bias = self.qkv.bias[0:C]
             k_weight = self.qkv.weight[:, C:2*C]
             k_bias = self.qkv.bias[C:2*C]
+            print(q_weight.shape, q_bias.shape)
             q = F.linear(x[:,0:1,:], q_weight, q_bias)
             k = F.linear(x, k_weight, k_bias)
             attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
