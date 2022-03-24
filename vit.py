@@ -427,7 +427,7 @@ class VisionTransformerDiffPruning(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-        pred_tokens = x[:,0].detach().clone()
+        pred_tokens = x[:,0:1,:].detach().clone()
         x = torch.cat((pred_tokens, x), dim=1)
 
         p_count = 0
