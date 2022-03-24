@@ -187,15 +187,14 @@ class Attention(nn.Module):
     def forward(self, x, num_keep_node = None, test = False):
         B, N, C = x.shape
         if test == True:
-            q_weight = self.qkv.weight[:, 0:C]
+            q_weight = self.qkv.weight[0:C, :]
             q_bias = self.qkv.bias[0:C]
-            k_weight = self.qkv.weight[:, C:2*C]
+            k_weight = self.qkv.weight[C:2*C, :]
             k_bias = self.qkv.bias[C:2*C]
-            print(q_weight.shape, q_bias.shape)
             q = F.linear(x[:,0:1,:], q_weight, q_bias)
-            k = F.linear(x, k_weight, k_bias)
-            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
-            top_attn = torch.argsort(attn.mean(1)[:,0,2:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            k = F.linear(x[:,2:,:], k_weight, k_bias)
+            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-2, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
+            top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
             pre_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([pre_attn, cls_attn, top_attn + 2], dim = 1) # B, K+2
