@@ -168,9 +168,10 @@ class Attention(nn.Module):
     def softmax_with_top_attn(self, attn, num_keep_node):
         B, H, N, N = attn.shape
         
-        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :(num_keep_node+1)] # B, K+1
-        pred_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-        top_attn = torch.cat([pred_attn, top_attn + 1], dim = 1) # B, K+2
+        top_attn = torch.argsort(attn.mean(1)[:,0,2:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+        pre_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        top_attn = torch.cat([pre_attn, cls_attn, top_attn + 2], dim = 1) # B, K+2
         
         attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
         dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
@@ -203,7 +204,7 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
             return x
         else:
-            attn_rt = attn.mean(1) # B,N,N
+            attn_rt = attn # B,H,N,N
             attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
