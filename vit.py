@@ -249,9 +249,9 @@ class Block(nn.Module):
             top_tokens = batch_index_select(x, top_attns)
             top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
-            index = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
-            top_attns = torch.stack((index, top_attns.reshape(-1))) # 2, B*(N*ratio+2)
-            x[top_attns.cpu().numpy()] = top_tokens.reshape(B*(num_keep_node+2), -1)
+            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
+            dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+2)
+            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+2), -1)
             return x
             
         if num_keep_node is not None:
