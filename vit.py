@@ -427,29 +427,27 @@ class VisionTransformerDiffPruning(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-        pred_tokens = self.cls_token.detach().copy().expand(B, -1, -1)
+        pred_tokens = x[:,0].detach().copy()
         x = torch.cat((pred_tokens, x), dim=1)
 
         p_count = 0
         out_attns = []
         out_attn_masks = []
         out_features = []
-        init_n = x.shape[1] - 1
+        init_n = x.shape[1] - 2
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+2),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+2),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)
-                #if i % 3 == 2:
-                #    out_features.append(x[:,0,:])
         
         x = self.norm(x)
         x = x[:, 1]
