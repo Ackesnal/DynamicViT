@@ -1,20 +1,15 @@
 """ Vision Transformer (ViT) in PyTorch
-
 A PyTorch implement of Vision Transformers as described in
 'An Image Is Worth 16 x 16 Words: Transformers for Image Recognition at Scale' - https://arxiv.org/abs/2010.11929
-
 The official jax code is released and available at https://github.com/google-research/vision_transformer
-
 Acknowledgments:
 * The paper authors for releasing code and weights, thanks!
 * I fixed my class token impl based on Phil Wang's https://github.com/lucidrains/vit-pytorch ... check it out
 for some einops/einsum fun
 * Simple transformer style inspired by Andrej Karpathy's https://github.com/karpathy/minGPT
 * Bert reference code checks against Huggingface Transformers and Tensorflow Bert
-
 DeiT model defs and weights from https://github.com/facebookresearch/deit,
 paper `DeiT: Data-efficient Image Transformers` - https://arxiv.org/abs/2012.12877
-
 Hacked together by / Copyright 2020 Ross Wightman
 """
 import math
@@ -26,6 +21,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 
 from utils import batch_index_select
 
@@ -151,7 +147,6 @@ class Mlp(nn.Module):
         return x
 
 
-
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -165,44 +160,68 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def softmax_with_policy(self, attn, policy, eps=1e-6):
-        B, N, _ = policy.size()
-        B, H, N, N = attn.size()
-        attn_policy = policy.reshape(B, 1, 1, N)  # * policy.reshape(B, 1, N, 1)
-        eye = torch.eye(N, dtype=attn_policy.dtype, device=attn_policy.device).view(1, 1, N, N)
-        attn_policy = attn_policy + (1.0 - attn_policy) * eye
-        max_att = torch.max(attn, dim=-1, keepdim=True)[0]
-        attn = attn - max_att
-        # attn = attn.exp_() * attn_policy
-        # return attn / attn.sum(dim=-1, keepdim=True)
+    def softmax_with_top_attn(self, attn, num_keep_node):
+        B, H, N, N = attn.shape
+        
+        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+        cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+        
+        attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
+        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+        dim2 = top_attn.reshape(-1) # B*(K+1)
+        attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
+        attn_mask = attn_mask * (-100000.0) # 降低attn的比重
+        attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
+        
+        attn = attn + attn_mask
+        
+        return attn.softmax(-1), top_attn
 
-        # for stable training
-        attn = attn.to(torch.float32).exp_() * attn_policy.to(torch.float32)
-        attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
-        return attn.type_as(max_att)
-
-    def forward(self, x, policy):
-        # policy: B, N+1, 1
+    def forward(self, x, num_keep_node = None, test = False):
         B, N, C = x.shape
+        if test == True:
+            q_weight = self.qkv.weight[0:C, :]
+            q_bias = self.qkv.bias[0:C]
+            k_weight = self.qkv.weight[C:2*C, :]
+            k_bias = self.qkv.bias[C:2*C]
+            q = F.linear(x[:,0:1,:], q_weight, q_bias)
+            k = F.linear(x[:,1:,:], k_weight, k_bias)
+            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
+            top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+            top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+            return top_attn
+        
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
-
         attn = (q @ k.transpose(-2, -1)) * self.scale
-
-        if policy is None:
-            attn = attn.softmax(dim=-1)
-        else:
-            attn = self.softmax_with_policy(attn, policy)
         
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
+        if num_keep_node is None:
+            attn = attn.softmax(dim=-1)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            return x
+        else:
+            attn_rt = attn # B,H,N,N
+            attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            
+            # generate the top attn mask
+            attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+            dim2 = top_attn.reshape(-1) # B*(K+1)
+            attn_mask[dim1, dim2] = 1.0
+            attn_mask = attn_mask.reshape(B,N,1)
+            attn_mask.requires_grad = False
+            
+            return x, attn_mask, attn_rt
 
 
 class Block(nn.Module):
-
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
@@ -215,10 +234,26 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, policy=None):
-        x = x + self.drop_path(self.attn(self.norm1(x), policy=policy))
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
+    def forward(self, x, num_keep_node = None, test = False):
+        if test == True:
+            B, N, C = x.shape
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True)
+            top_tokens = batch_index_select(x, top_attns)
+            top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
+            top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
+            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
+            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
+            return x
+        if num_keep_node is not None:
+            tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
+            x = x + self.drop_path(tmp) * attn_mask
+            x = x + self.drop_path(self.mlp(self.norm2(x))) * attn_mask
+            return x, attn_mask, attn
+        else:
+            x = x + self.drop_path(self.attn(self.norm1(x))) 
+            x = x + self.drop_path(self.mlp(self.norm2(x)))
+            return x
 
 
 class PatchEmbed(nn.Module):
@@ -285,98 +320,8 @@ class HybridEmbed(nn.Module):
         return x
 
 
-class PredictorLG(nn.Module):
-    """ Image to Patch Embedding
-    """
-    def __init__(self, embed_dim=384):
-        super().__init__()
-        """
-        self.in_conv = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU()
-        )
-        self.out_conv = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.GELU(),
-            nn.Linear(embed_dim // 2, embed_dim // 4),
-            nn.GELU(),
-            nn.Linear(embed_dim // 4, 2),
-            nn.LogSoftmax(dim=-1)
-        )
-        """
-        """
-        self.norm0 = nn.LayerNorm(embed_dim) #384
-        self.linear0 = nn.Linear(embed_dim, embed_dim//3) #128
-        self.act0 = nn.GELU()
-        
-        self.norm1 = nn.LayerNorm(embed_dim//3)
-        self.dpconv1 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim//3) #128
-        self.linear1 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1) #128
-        self.act1 = nn.GELU()
-        
-        self.norm2 = nn.LayerNorm(embed_dim//3)
-        self.dpconv2 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 5, stride = 1, padding = 2, groups = embed_dim//3) #128
-        self.linear2 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1) #128
-        self.act2 = nn.GELU()
-        
-        self.norm3 = nn.LayerNorm(embed_dim//3)
-        self.dpconv3 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim//3) #128
-        self.linear3 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1) #128
-        self.act3 = nn.GELU()
-        
-        self.norm4 = nn.LayerNorm(embed_dim//3)
-        self.linear4 = nn.Conv2d(in_channels = embed_dim//3, out_channels = 2, kernel_size = 1) #2
-        self.out = nn.LogSoftmax(dim=-1)
-        """
-        self.norm0 = nn.LayerNorm(embed_dim) #384
-        self.linear0 = nn.Linear(embed_dim, embed_dim) #384
-        self.act0 = nn.GELU()
-        
-        self.norm1 = nn.LayerNorm(embed_dim) #384
-        self.pool1 = torch.nn.AvgPool2d(kernel_size = 3, stride = 1, padding = 1) #384
-        self.linear1 = nn.Linear(embed_dim, embed_dim // 4) #128
-        self.act1 = nn.GELU()
-        self.linear2 = nn.Linear(embed_dim // 4, 2)
-        self.out = nn.LogSoftmax(dim=-1)
-        
-
-    def forward(self, x, policy):
-        # policy: B, N, 1
-        
-        """
-        B, N, C = x.size()
-        local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
-        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
-        
-        x = x.reshape(B, int(N**0.5), int(N**0.5), C)
-        x = self.act0(self.linear0(self.norm0(x)))
-        x = self.act1(self.linear1(self.dpconv1(self.norm1(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
-        x = self.act2(self.linear2(self.dpconv2(self.norm2(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
-        x = self.act3(self.linear3(self.dpconv3(self.norm3(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
-        x = self.out(self.linear4(self.norm4(x).permute(0,3,1,2)).permute(0,2,3,1))
-        return x.reshape(B, N, 2)
-        """
-        
-        B, N, C = x.size()
-        local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
-        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
-        
-        x = x.reshape(B, int(N**0.5), int(N**0.5), C)
-        x = self.act0(self.linear0(self.norm0(x)))
-        x = self.act1(self.linear1(self.pool1(self.norm1(x).permute(0,3,1,2)).permute(0,2,3,1)))
-        x = self.out(self.linear2(x))
-        return x.reshape(B, N, 2)
-        
-
-
 class VisionTransformerDiffPruning(nn.Module):
     """ Vision Transformer
-
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
     """
@@ -443,11 +388,6 @@ class VisionTransformerDiffPruning(nn.Module):
         # Classifier head
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
-        predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-        # predictor_list = [PredictorLG(embed_dim) for _ in range(depth)]
-
-        self.score_predictor = nn.ModuleList(predictor_list)
-
         self.distill = distill
 
         self.pruning_loc = pruning_loc
@@ -456,11 +396,6 @@ class VisionTransformerDiffPruning(nn.Module):
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
         self.apply(self._init_weights)
-        
-        # 做pooling
-        # self.linear = nn.ModuleList([nn.Linear(embed_dim, embed_dim) for _ in range(len(pruning_loc))])
-        # self.poolnorm = nn.ModuleList([norm_layer(embed_dim) for _ in range(len(pruning_loc))])
-        # self.drop = nn.ModuleList([DropPath(i) for i in dpr])
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -492,82 +427,39 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.pos_drop(x)
 
         p_count = 0
-        out_pred_prob = []
-        init_n = 14 * 14
-        prev_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 记录上一次的选择结果
-        std_decision = torch.ones(B, init_n, 1, dtype=x.dtype, device=x.device) # 标准选择，即全选
-        policy = torch.ones(B, init_n + 1, 1, dtype=x.dtype, device=x.device)
-        pred_score = 0
+        out_attns = []
+        out_attn_masks = []
+        out_features = []
+        init_n = x.shape[1] - 1
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
                 if self.training:
-                    spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2) # B, N, 2
-                    
-                    # 这一层的训练
-                    hard_keep_decision = F.gumbel_softmax(pred_score, hard=True)[:, :, 0:1] * std_decision # B, N, 1
-                    out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
-                    cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
-                    policy = torch.cat([cls_policy, hard_keep_decision], dim=1) # B, N+1, 1
-                    
-                    # Pruned MHSA
-                    mhsa_x = blk(x, policy=policy) # B, N*ratio, C
-                    
-                    # Mean Pooling
-                    mean_x = torch.mean(x, dim=1, keepdim=True) + x
-                    # mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
-                    
-                    x = mhsa_x*policy + mean_x*(1-policy)
-                    final_decision = hard_keep_decision
-                else:
-                    spatial_x = x[:, 1:]
-                    pred_score = self.score_predictor[p_count](spatial_x, prev_decision).reshape(B, -1, 2)
-                    score = pred_score[:,:,0]
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    keep_policy = torch.argsort(score, dim=1, descending=True)[:, :num_keep_node]
-                    cls_policy = torch.zeros(B, 1, dtype=keep_policy.dtype, device=keep_policy.device)
-                    now_policy = torch.cat([cls_policy, keep_policy + 1], dim=1) # B, N*ratio + 1
-                    
-                    # Pruned MHSA
-                    mhsa_x = batch_index_select(x, now_policy) # B, N*ratio, C
-                    mhsa_x = blk(mhsa_x)
-                    
-                    # Mean Pooling
-                    mean_x = torch.mean(x, dim=1, keepdim=True) + x
-                    # mean_x = self.drop[p_count](self.linear[p_count](self.poolnorm[p_count](mean_x))) + mean_x
-                    
-                    # 把idle部分拼回去
-                    index = torch.arange(B, dtype=now_policy.dtype, device=now_policy.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-                    now_policy = torch.stack((index, now_policy.reshape(-1))) # 2, B*(N*ratio+1)
-                    mean_x[now_policy.cpu().numpy()] = mhsa_x.reshape(B*(num_keep_node+1), -1)
-                    
-                    x = mean_x
-                    
-                p_count = p_count +1
-                
-            else:
-                if self.training:
-                    x = blk(x, policy)
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
+                    out_attn_masks.append(attn_mask)
+                    out_attns.append(attn)
                 else:
-                    x = blk(x)
-            
+                    num_keep_node = int(init_n * self.token_ratio[p_count])
+                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                p_count = p_count + 1
+            else:
+                x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
-        features = x[:, 1:]
         x = x[:, 0]
         x = self.pre_logits(x)
+        features = x
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, final_decision.detach(), out_pred_prob
+                return x, features, out_attns, out_attn_masks, out_features
             else:
-                return x, out_pred_prob
+                return x, out_attns, out_attn_masks, out_features
         else:
             return x
 
 class VisionTransformerTeacher(nn.Module):
     """ Vision Transformer
-
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
     """
@@ -666,15 +558,18 @@ class VisionTransformerTeacher(nn.Module):
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
+        out_features = []
         for i, blk in enumerate(self.blocks):
-            x = blk(x)
+            x = checkpoint.checkpoint(blk, x)
+            #if i % 3 == 2:
+            #    out_features.append(x[:,0,:])
 
         feature = self.norm(x)
         cls = feature[:, 0]
-        tokens = feature[:, 1:]
         cls = self.pre_logits(cls)
+        tokens = cls
         cls = self.head(cls)
-        return cls, tokens
+        return cls, tokens, out_features
 
 def resize_pos_embed(posemb, posemb_new):
     # Rescale the grid of position embeddings when loading from state_dict. Adapted from
@@ -712,5 +607,3 @@ def checkpoint_filter_fn(state_dict, model):
             v = resize_pos_embed(v, model.pos_embed)
         out_dict[k] = v
     return out_dict
-
-
