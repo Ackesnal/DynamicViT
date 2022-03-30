@@ -26,7 +26,7 @@ import torch.nn as nn
 from vit import VisionTransformerDiffPruning, VisionTransformerTeacher, _cfg, checkpoint_filter_fn
 from lvvit import LVViTDiffPruning, LVViT_Teacher
 import math
-import shutil
+import shutil 
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DynamicViT training and evaluation script', add_help=False)
@@ -205,7 +205,7 @@ def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_
     if step < warming_up_step:
         backbone_lr = 0
     else:
-        backbone_lr = min(init_lr * 0.1, cos_lr)
+        backbone_lr = min(init_lr * 1.0, cos_lr)
     print('## Using lr  %.7f for BACKBONE, cosine lr = %.7f for PREDICTOR' % (backbone_lr, cos_lr))
     for param_group in param_groups:
         if param_group['name'] == 'predictor':
@@ -317,7 +317,10 @@ def main(args):
             model_t.to(device)
             print('sucessfully loaded from pre-trained weights for the teach model')
     elif args.arch == 'lvvit_s':
-        PRUNING_LOC = [4,8,12] 
+        PRUNING_LOC = [i for i in range(4,16)] # 每层都加一个predictor
+        KEEP_RATE = []
+        for i in range(3):
+            KEEP_RATE.extend([base_rate**(i+1) for _ in range(4)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = LVViTDiffPruning(
@@ -343,7 +346,10 @@ def main(args):
             model_t.to(device)
             print('sucessfully loaded from pre-trained weights for the teach model')
     elif args.arch == 'lvvit_m':
-        PRUNING_LOC = [5,10,15] 
+        PRUNING_LOC = [i for i in range(5,20)] # 每层都加一个predictor
+        KEEP_RATE = []
+        for i in range(3):
+            KEEP_RATE.extend([base_rate**(i+1) for _ in range(5)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = LVViTDiffPruning(
@@ -503,7 +509,7 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
-        warmup_step = 5
+        warmup_step = 0
         adjust_learning_rate(optimizer.param_groups, args.lr, args.min_lr, epoch, args.epochs, warmup_predictor=False, warming_up_step=warmup_step, base_multi=0.1)
 
         train_stats = train_one_epoch(

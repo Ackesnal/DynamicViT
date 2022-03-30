@@ -561,8 +561,6 @@ class VisionTransformerTeacher(nn.Module):
         out_features = []
         for i, blk in enumerate(self.blocks):
             x = checkpoint.checkpoint(blk, x)
-            #if i % 3 == 2:
-            #    out_features.append(x[:,0,:])
 
         feature = self.norm(x)
         cls = feature[:, 0]
