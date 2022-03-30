@@ -417,6 +417,7 @@ class VisionTransformerDiffPruning(nn.Module):
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pred_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -452,6 +453,8 @@ class VisionTransformerDiffPruning(nn.Module):
 
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
+        trunc_normal_(self.pred_token, std=.02)
+        
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -479,15 +482,17 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.patch_embed(x)
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        pred_tokens = self.pred_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
+        x = torch.cat((pred_tokens, x), dim=1)
 
         p_count = 0
         out_attns = []
         out_attn_masks = []
         out_features = []
-        init_n = x.shape[1] - 1
+        init_n = x.shape[1] - 2
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
                 if self.training:
