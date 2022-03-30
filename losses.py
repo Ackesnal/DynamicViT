@@ -178,19 +178,12 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # cut loss
         cut_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
-            B, N, _ = mask.shape
-            K = mask.squeeze()[0].mean()
-            W = F.softmax(out_attns[i], dim = -1) # B,N,N
-            
-            diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+            W = out_attns[i].softmax(-1) # B,H,N,N
+            B, H, N, _ = W.shape
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
-            
-            # cut
-            cut = (diffcut*W) / 2 # 组间距离
-            assoc = (samecut*W) / 2 # 组内距离
-            normalized_cut = F.mse_loss(cut.sum(-1), torch.zeros(B, N, dtype=cut.dtype, device=cut.device)) + F.mse_loss(assoc.sum(-1), mask.detach().squeeze()) # B
-            
-            cut_loss = cut_loss + normalized_cut
+            intra = W * samecut.reshape(B,1,N,N)
+            intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B,H,N, device=intra.device) * mask.detach().reshape(B,1,N).expand(B,H,N))
+            cut_loss = cut_loss + intra_loss 
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
@@ -208,13 +201,6 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         # distilled feature loss
         token_kl_loss = 0.0
-        """
-        for i in range(len(student_features)):
-            token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(student_features[i], dim=-1),
-                                                     F.log_softmax(teacher_features[i], dim=-1),
-                                                     reduction='batchmean',
-                                                     log_target=True) / len(student_features)
-        """
         if len(token_s.shape) == 2:
             token_kl_loss = token_kl_loss + F.mse_loss(token_s, token_t)
         else:
