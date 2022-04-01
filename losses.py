@@ -205,11 +205,10 @@ class DistillDiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        cls_s, token_s, out_attns, out_attn_masks, out_features = outputs
+        cls_s, token_s, out_attns, out_attn_masks, out_logits = outputs
         
-        # cut loss
+        # intra-inter loss
         cut_loss = 0.0
-        spatial_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
             W = out_attns[i].softmax(-1)
             B, H, N, _ = W.shape
@@ -228,8 +227,13 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
         
+        # supervised loss
+        sup_loss = 0.0
+        for i, logits in enumerate(out_logits):
+            sup_loss = sup_loss + F.cross_entropy(out_logits, labels)
+        
         with torch.no_grad():
-            cls_t, token_t, teacher_features = self.teacher_model(inputs)
+            cls_t, token_t = self.teacher_model(inputs)
         
         # distilled classification loss
         cls_kl_loss = F.kl_div(F.log_softmax(cls_s, dim=-1),
@@ -239,13 +243,6 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         # distilled feature loss
         token_kl_loss = 0.0
-        """
-        for i in range(len(student_features)):
-            token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(student_features[i], dim=-1),
-                                                     F.log_softmax(teacher_features[i], dim=-1),
-                                                     reduction='batchmean',
-                                                     log_target=True) / len(student_features)
-        """
         if len(token_s.shape) == 2:
             token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(token_s, dim=-1),
                                                      F.log_softmax(token_t, dim=-1),
@@ -257,7 +254,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                                                      reduction='batchmean',
                                                      log_target=True)
         
-        # print(cls_loss, pred_loss)
+        print(cls_loss, cut_loss, sup_loss, cls_kl_loss, token_kl_loss)
         loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) 
         
         if self.print_mode:

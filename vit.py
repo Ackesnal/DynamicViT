@@ -429,7 +429,7 @@ class VisionTransformerDiffPruning(nn.Module):
         p_count = 0
         out_attns = []
         out_attn_masks = []
-        out_features = []
+        out_logits = []
         init_n = x.shape[1] - 1
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
@@ -438,6 +438,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
+                    out_logits.append(x[:,0])
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
@@ -450,11 +451,24 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.pre_logits(x)
         features = x
         x = self.head(x)
+        
+        # 处理各个节点的cls token
+        head_weight = self.head.weight
+        head_bias = self.head.bias
+        pre_logits_weight = self.pre_logits.weight
+        pre_logits_bias = self.pre_logits.bias
+        head_weight.requires_grad = False
+        head_bias.requires_grad = False
+        pre_logits_weight.requires_grad = False
+        pre_logits_bias.requires_grad = False
+        for i in range(len(out_logits)):
+            out_logits[i] = nn.linear(nn.linear(out_logits[i], pre_logits_weight, pre_logits_bias), head_weight, head_bias)
+            
         if self.training:
             if self.distill:
-                return x, features, out_attns, out_attn_masks, out_features
+                return x, features, out_attns, out_attn_masks, out_logits
             else:
-                return x, out_attns, out_attn_masks, out_features
+                return x, out_attns, out_attn_masks, out_logits
         else:
             return x
 
@@ -557,8 +571,7 @@ class VisionTransformerTeacher(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-
-        out_features = []
+        
         for i, blk in enumerate(self.blocks):
             x = checkpoint.checkpoint(blk, x)
 
@@ -567,7 +580,7 @@ class VisionTransformerTeacher(nn.Module):
         cls = self.pre_logits(cls)
         tokens = cls
         cls = self.head(cls)
-        return cls, tokens, out_features
+        return cls, tokens
 
 def resize_pos_embed(posemb, posemb_new):
     # Rescale the grid of position embeddings when loading from state_dict. Adapted from
