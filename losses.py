@@ -188,14 +188,13 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.token_distill_loss = 0
         self.mse_token = mse_token
         self.dynamic = dynamic
-
-        self.ratio_weight = ratio_weight
+        
         self.distill_weight = distill_weight
         
         self.cut_loss = 0
-        self.cut_weight = 2.0
+        self.cut_weight = 5.0
         self.sup_loss = 0
-        self.sup_weight = 2.0
+        self.sup_weight = 0.1
 
     def forward(self, inputs, outputs, labels):
         """
@@ -256,7 +255,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                                                      reduction='batchmean',
                                                      log_target=True)
         
-        print(cls_loss, cut_loss, sup_loss, cls_kl_loss, token_kl_loss)
+        # print(cls_loss, cut_loss, sup_loss, cls_kl_loss, token_kl_loss)
         loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.sup_weight * sup_loss / len(self.pruning_loc)
         
         if self.print_mode:
@@ -264,12 +263,14 @@ class DistillDiffPruningLoss(torch.nn.Module):
             self.cls_distill_loss += cls_kl_loss.item()
             self.token_distill_loss += token_kl_loss.item()
             self.cut_loss += cut_loss.item()
+            self.sup_loss += sup_loss.item()
             self.count += 1
             if self.count == 100:
-                print('loss info: cls_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f' % (self.cls_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100, self.cut_loss/100))
+                print('loss info: cls_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f, sup_loss=%.4f' % (self.cls_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100, self.cut_loss/100, self.sup_loss/100))
                 self.count = 0
                 self.cls_loss = 0
                 self.cls_distill_loss = 0
                 self.token_distill_loss = 0
                 self.cut_loss = 0
+                self.sup_loss = 0
         return loss
