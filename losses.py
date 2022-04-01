@@ -232,7 +232,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # supervised loss
         sup_loss = 0.0
         for i, logits in enumerate(out_logits):
-            sup_loss = sup_loss + F.cross_entropy(out_logits, labels)
+            sup_loss = sup_loss + F.cross_entropy(logits, labels)
         
         with torch.no_grad():
             cls_t, token_t = self.teacher_model(inputs)
