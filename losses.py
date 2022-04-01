@@ -194,6 +194,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         self.cut_loss = 0
         self.cut_weight = 2.0
+        self.sup_loss = 0
+        self.sup_weight = 2.0
 
     def forward(self, inputs, outputs, labels):
         """
@@ -255,7 +257,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                                                      log_target=True)
         
         print(cls_loss, cut_loss, sup_loss, cls_kl_loss, token_kl_loss)
-        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) 
+        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.sup_weight * sup_loss / len(self.pruning_loc)
         
         if self.print_mode:
             self.cls_loss += cls_loss.item()

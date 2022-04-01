@@ -453,12 +453,12 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.head(x)
         
         # 处理各个节点的cls token
-        head_weight = self.head.weight
-        head_bias = self.head.bias
+        head_weight = self.head.weight.detach()
+        head_bias = self.head.bias.detach()
         head_weight.requires_grad = False
         head_bias.requires_grad = False
         for i in range(len(out_logits)):
-            out_logits[i] = nn.linear(out_logits[i], head_weight, head_bias)
+            out_logits[i] = F.linear(out_logits[i], head_weight, head_bias)
             
         if self.training:
             if self.distill:
