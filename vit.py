@@ -164,7 +164,7 @@ class Attention(nn.Module):
         B, H, N, N = attn.shape
         
         top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-        cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
         top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
         
         attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
@@ -189,7 +189,7 @@ class Attention(nn.Module):
             k = F.linear(x[:,1:,:], k_weight, k_bias)
             attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
             top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-            cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+            cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
             return top_attn
         
@@ -204,7 +204,7 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
             return x
         else:
-            attn_rt = attn # B,H,N,N
+            attn_rt = attn # B,N,N
             attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
@@ -435,12 +435,12 @@ class VisionTransformerDiffPruning(nn.Module):
             if i in self.pruning_loc:
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x * 0.8 + x.mean(1).reshape(B,1,self.embed_dim) * 0.2, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                    x = blk(x * 0.8 + x.mean(1).reshape(B,1,self.embed_dim) * 0.2, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)
