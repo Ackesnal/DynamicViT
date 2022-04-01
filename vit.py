@@ -435,12 +435,12 @@ class VisionTransformerDiffPruning(nn.Module):
             if i in self.pruning_loc:
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = checkpoint.checkpoint(blk, x * 0.8 + x.mean(1).reshape(B,1,self.embed_dim) * 0.2, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x = blk(x * 0.8 + x.mean(1).reshape(B,1,self.embed_dim) * 0.2, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)
