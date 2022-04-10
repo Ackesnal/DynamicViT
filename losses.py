@@ -192,9 +192,9 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.distill_weight = distill_weight
         
         self.cut_loss = 0
-        self.cut_weight = 5.0
+        self.cut_weight = 20.0
         self.sup_loss = 0
-        self.sup_weight = 0.1
+        self.sup_weight = 20.0
 
     def forward(self, inputs, outputs, labels):
         """
@@ -221,7 +221,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             # inter = diffcut.reshape(B,1,N,N)*W # 组间距离
             # inter_loss = F.mse_loss(inter.sum(-1), torch.zeros(B, H, N, device=inter.device))
             intra = samecut.reshape(B,1,N,N) * W # 组内距离
-            intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B, H, N, device=intra.device) * mask.detach().reshape(B,1,N).expand(B,H,N))
+            intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B, H, N, device=intra.device) * mask.detach().reshape(B,1,N))
             
             cut_loss = cut_loss + intra_loss #+ inter_loss 
         
@@ -230,8 +230,9 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         # supervised loss
         sup_loss = 0.0
-        for i, logits in enumerate(out_logits):
-            sup_loss = sup_loss + F.cross_entropy(logits, labels)
+        target_feature = F.normalize(out_attns[-1][:,:,0,:].mean(1))
+        for i in range(len(out_attns)-1):
+            sup_loss = sup_loss + F.mse_loss(F.normalize(out_attns[i][:,:,0,:].mean(1)), target_feature.detach())
         
         with torch.no_grad():
             cls_t, token_t = self.teacher_model(inputs)
