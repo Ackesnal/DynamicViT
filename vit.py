@@ -489,9 +489,9 @@ class VisionTransformerDiffPruning(nn.Module):
                 if i == len(self.blocks) - 2:
                     x = torch.cat((self.out_token.expand(B, -1, -1), x), dim = 1)
                 if i >= len(self.blocks) - 2:
-                        cls_attn = True
-                    else:
-                        cls_attn = False
+                    cls_attn = True
+                else:
+                    cls_attn = False
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node, cls_attn = cls_attn) # x: B,(N+1),C  attn: B,N,1 
