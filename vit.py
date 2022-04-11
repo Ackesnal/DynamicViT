@@ -160,38 +160,69 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def softmax_with_top_attn(self, attn, num_keep_node):
-        B, H, N, N = attn.shape
-        
-        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-        cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-        top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
-        
-        attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
-        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
-        dim2 = top_attn.reshape(-1) # B*(K+1)
-        attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
-        attn_mask = attn_mask * (-100000.0) # 降低attn的比重
-        attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
-        
-        attn = attn + attn_mask
-        
-        return attn.softmax(-1), top_attn
+    def softmax_with_top_attn(self, attn, num_keep_node, cls_attn = False):
+        if cls_attn == False:
+            B, H, N, N = attn.shape
 
-    def forward(self, x, num_keep_node = None, test = False):
-        B, N, C = x.shape
-        if test == True:
-            q_weight = self.qkv.weight[0:C, :]
-            q_bias = self.qkv.bias[0:C]
-            k_weight = self.qkv.weight[C:2*C, :]
-            k_bias = self.qkv.bias[C:2*C]
-            q = F.linear(x[:,0:1,:], q_weight, q_bias)
-            k = F.linear(x[:,1:,:], k_weight, k_bias)
-            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
-            top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
-            return top_attn
+
+            attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+            dim2 = top_attn.reshape(-1) # B*(K+1)
+            attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
+            attn_mask = attn_mask * (-100000.0) # 降低attn的比重
+            attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
+
+            attn = attn + attn_mask
+
+            return attn.softmax(-1), top_attn
+        else:
+            B, H, N, N = attn.shape
+
+            top_attn = torch.argsort(attn.mean(1)[:,1,2:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+            top_attn = torch.cat([cls_attn, cls_attn + 1, top_attn + 2], dim = 1) # B, K+2
+
+            attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
+            dim2 = top_attn.reshape(-1) # B*(K+2)
+            attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
+            attn_mask = attn_mask * (-100000.0) # 降低attn的比重
+            attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
+
+            attn = attn + attn_mask
+
+            return attn.softmax(-1), top_attn
+
+    def forward(self, x, num_keep_node = None, cls_attn = False, test = False):
+        B, N, C = x.shape
+        if test == True:
+            if cls_attn == False:
+                q_weight = self.qkv.weight[0:C, :]
+                q_bias = self.qkv.bias[0:C]
+                k_weight = self.qkv.weight[C:2*C, :]
+                k_bias = self.qkv.bias[C:2*C]
+                q = F.linear(x[:,0:1,:], q_weight, q_bias)
+                k = F.linear(x[:,1:,:], k_weight, k_bias)
+                attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
+                top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+                cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+                top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+                return top_attn
+            else:
+                q_weight = self.qkv.weight[0:C, :]
+                q_bias = self.qkv.bias[0:C]
+                k_weight = self.qkv.weight[C:2*C, :]
+                k_bias = self.qkv.bias[C:2*C]
+                q = F.linear(x[:,1:2,:], q_weight, q_bias)
+                k = F.linear(x[:,2:,:], k_weight, k_bias)
+                attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-2, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
+                top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+                cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+                top_attn = torch.cat([cls_attn, cls_attn+1, top_attn + 2], dim = 1) # B, K+1
+                return top_attn
         
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
@@ -204,21 +235,38 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
             return x
         else:
-            attn_rt = attn # B,N,N
-            attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
-            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-            
-            # generate the top attn mask
-            attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
-            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
-            dim2 = top_attn.reshape(-1) # B*(K+1)
-            attn_mask[dim1, dim2] = 1.0
-            attn_mask = attn_mask.reshape(B,N,1)
-            attn_mask.requires_grad = False
-            
-            return x, attn_mask, attn_rt
+            if cls_attn == False:
+                attn_rt = attn # B,N,N
+                attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
+                x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+                x = self.proj(x)
+                x = self.proj_drop(x)
+
+                # generate the top attn mask
+                attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
+                dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+                dim2 = top_attn.reshape(-1) # B*(K+1)
+                attn_mask[dim1, dim2] = 1.0
+                attn_mask = attn_mask.reshape(B,N,1)
+                attn_mask.requires_grad = False
+
+                return x, attn_mask, attn_rt
+            else:
+                attn_rt = attn # B,N,N
+                attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node, cls_attn)
+                x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+                x = self.proj(x)
+                x = self.proj_drop(x)
+
+                # generate the top attn mask
+                attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
+                dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
+                dim2 = top_attn.reshape(-1) # B*(K+2)
+                attn_mask[dim1, dim2] = 1.0
+                attn_mask = attn_mask.reshape(B,N,1)
+                attn_mask.requires_grad = False
+
+                return x, attn_mask, attn_rt
 
 
 class Block(nn.Module):
@@ -234,19 +282,22 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, num_keep_node = None, test = False):
+    def forward(self, x, num_keep_node = None, cls_attn = False, test = False):
         if test == True:
             B, N, C = x.shape
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True)
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, cls_attn = cls_attn, test = True)
             top_tokens = batch_index_select(x, top_attns)
             top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
-            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            if cls_attn == False:
+                dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            else:
+                dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
             dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
             x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
             return x, top_attns
         if num_keep_node is not None:
-            tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
+            tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node, cls_attn = cls_attn)
             x = x + self.drop_path(tmp) * attn_mask
             x = x + self.drop_path(self.mlp(self.norm2(x))) * attn_mask
             return x, attn_mask, attn
@@ -364,6 +415,7 @@ class VisionTransformerDiffPruning(nn.Module):
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.out_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -395,6 +447,7 @@ class VisionTransformerDiffPruning(nn.Module):
 
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
+        trunc_normal_(self.out_token, std=.02)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -433,26 +486,35 @@ class VisionTransformerDiffPruning(nn.Module):
         init_n = x.shape[1] - 1
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
+                if i == len(self.blocks) - 2:
+                    x = torch.cat((self.out_token.expand(B, -1, -1), x), dim = 1)
+                if i >= len(self.blocks) - 2:
+                        cls_attn = True
+                    else:
+                        cls_attn = False
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node, cls_attn = cls_attn) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                     out_logits.append(x[:,0])
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, top_attns = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                    x, top_attns = blk(x, num_keep_node = num_keep_node, cls_attn = cls_attn, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
+        """
         if self.training:
             top_attns = torch.argsort(out_attns[-1].mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] + 1 # B, K
         else:
             top_attns = top_attns[:,1:]
         x = batch_index_select(x, top_attns)
         x = x.mean(1)
+        """
+        x = x[:, 0]
         x = self.pre_logits(x)
         features = x
         x = self.head(x)
