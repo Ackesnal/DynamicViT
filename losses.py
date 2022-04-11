@@ -189,7 +189,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         cls_loss = self.base_criterion(cls_s, labels)
         
         with torch.no_grad():
-            cls_t, token_t, teacher_features = self.teacher_model(inputs)
+            cls_t, token_t = self.teacher_model(inputs)
         
         # distilled classification loss
         cls_kl_loss = F.kl_div(
