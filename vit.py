@@ -460,7 +460,7 @@ class VisionTransformerDiffPruning(nn.Module):
                 x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
-        x = x[:, 1]
+        x = x[:, 0]
         x = self.pre_logits(x)
         features = x
         x = self.head(x)
