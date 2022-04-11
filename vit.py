@@ -285,7 +285,7 @@ class Block(nn.Module):
     def forward(self, x, num_keep_node = None, cls_attn = False, test = False):
         if test == True:
             B, N, C = x.shape
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, cls_attn = cls_attn, test = True)
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, cls_attn = cls_attn, test = test)
             top_tokens = batch_index_select(x, top_attns)
             top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
