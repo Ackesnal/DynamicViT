@@ -244,7 +244,7 @@ class Block(nn.Module):
             dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
             dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
             x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
-            return x
+            return x, top_attns
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
             x = x + self.drop_path(tmp) * attn_mask
@@ -389,7 +389,7 @@ class VisionTransformerDiffPruning(nn.Module):
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         self.distill = distill
-
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
         self.pruning_loc = pruning_loc
         self.token_ratio = token_ratio
 
@@ -441,14 +441,17 @@ class VisionTransformerDiffPruning(nn.Module):
                     out_logits.append(x[:,0])
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                    x, top_attns = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
-        top_attn = torch.argsort(out_attns[-1].mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] + 1 # B, K
-        x = batch_index_select(x, top_attn)
+        if self.training:
+            top_attns = torch.argsort(out_attns[-1].mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] + 1 # B, K
+        else:
+            top_attns = top_attns[:,1:]
+        x = batch_index_select(x, top_attns)
         x = x.mean(1)
         x = self.pre_logits(x)
         features = x
