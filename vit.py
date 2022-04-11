@@ -1,20 +1,15 @@
 """ Vision Transformer (ViT) in PyTorch
-
 A PyTorch implement of Vision Transformers as described in
 'An Image Is Worth 16 x 16 Words: Transformers for Image Recognition at Scale' - https://arxiv.org/abs/2010.11929
-
 The official jax code is released and available at https://github.com/google-research/vision_transformer
-
 Acknowledgments:
 * The paper authors for releasing code and weights, thanks!
 * I fixed my class token impl based on Phil Wang's https://github.com/lucidrains/vit-pytorch ... check it out
 for some einops/einsum fun
 * Simple transformer style inspired by Andrej Karpathy's https://github.com/karpathy/minGPT
 * Bert reference code checks against Huggingface Transformers and Tensorflow Bert
-
 DeiT model defs and weights from https://github.com/facebookresearch/deit,
 paper `DeiT: Data-efficient Image Transformers` - https://arxiv.org/abs/2012.12877
-
 Hacked together by / Copyright 2020 Ross Wightman
 """
 import math
@@ -168,13 +163,12 @@ class Attention(nn.Module):
     def softmax_with_top_attn(self, attn, num_keep_node):
         B, H, N, N = attn.shape
         
-        top_attn = torch.argsort(attn.mean(1)[:,0,2:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-        pre_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-        cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-        top_attn = torch.cat([pre_attn, cls_attn, top_attn + 2], dim = 1) # B, K+2
+        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+        cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+        top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
         
         attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
-        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
+        dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
         dim2 = top_attn.reshape(-1) # B*(K+1)
         attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
         attn_mask = attn_mask * (-100000.0) # 降低attn的比重
@@ -192,12 +186,11 @@ class Attention(nn.Module):
             k_weight = self.qkv.weight[C:2*C, :]
             k_bias = self.qkv.bias[C:2*C]
             q = F.linear(x[:,0:1,:], q_weight, q_bias)
-            k = F.linear(x[:,2:,:], k_weight, k_bias)
-            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-2, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
+            k = F.linear(x[:,1:,:], k_weight, k_bias)
+            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
             top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-            pre_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            top_attn = torch.cat([pre_attn, cls_attn, top_attn + 2], dim = 1) # B, K+2
+            cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+            top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
             return top_attn
         
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
@@ -211,7 +204,7 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
             return x
         else:
-            attn_rt = attn # B,H,N,N
+            attn_rt = attn # B,N,N
             attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
@@ -219,8 +212,8 @@ class Attention(nn.Module):
             
             # generate the top attn mask
             attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
-            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
-            dim2 = top_attn.reshape(-1) # B*(K+2)
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+            dim2 = top_attn.reshape(-1) # B*(K+1)
             attn_mask[dim1, dim2] = 1.0
             attn_mask = attn_mask.reshape(B,N,1)
             attn_mask.requires_grad = False
@@ -229,7 +222,6 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
-
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
@@ -249,11 +241,10 @@ class Block(nn.Module):
             top_tokens = batch_index_select(x, top_attns)
             top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
-            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
-            dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+2)
-            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+2), -1)
+            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
+            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
             return x
-            
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
             x = x + self.drop_path(tmp) * attn_mask
@@ -326,11 +317,11 @@ class HybridEmbed(nn.Module):
         if isinstance(x, (list, tuple)):
             x = x[-1]  # last feature if backbone outputs list/tuple of features
         x = self.proj(x).flatten(2).transpose(1, 2)
-        return x     
+        return x
+
 
 class VisionTransformerDiffPruning(nn.Module):
     """ Vision Transformer
-
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
     """
@@ -373,7 +364,6 @@ class VisionTransformerDiffPruning(nn.Module):
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pred_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -397,7 +387,7 @@ class VisionTransformerDiffPruning(nn.Module):
 
         # Classifier head
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
-        
+
         self.distill = distill
 
         self.pruning_loc = pruning_loc
@@ -405,8 +395,6 @@ class VisionTransformerDiffPruning(nn.Module):
 
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
-        trunc_normal_(self.pred_token, std=.02)
-        
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -434,47 +422,46 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.patch_embed(x)
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        pred_tokens = self.pred_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-        x = torch.cat((pred_tokens, x), dim=1)
 
         p_count = 0
         out_attns = []
         out_attn_masks = []
-        out_features = []
-        init_n = x.shape[1] - 2
+        out_logits = []
+        init_n = x.shape[1] - 1
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
                 if self.training:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+2),C  attn: B,N,1 
+                    x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
+                    out_logits.append(x[:,0])
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+2),C  attn: B,N,1 
+                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
-        x = x[:, 0]
+        x = x[:, 1:].mean(1)
         x = self.pre_logits(x)
         features = x
         x = self.head(x)
+            
         if self.training:
             if self.distill:
-                return x, features, out_attns, out_attn_masks, out_features
+                return x, features, out_attns, out_attn_masks, out_logits
             else:
-                return x, out_attns, out_attn_masks, out_features
+                return x, out_attns, out_attn_masks, out_logits
         else:
             return x
 
 class VisionTransformerTeacher(nn.Module):
     """ Vision Transformer
-
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
     """
@@ -572,19 +559,16 @@ class VisionTransformerTeacher(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-
-        out_features = []
+        
         for i, blk in enumerate(self.blocks):
             x = checkpoint.checkpoint(blk, x)
-            #if i % 3 == 2:
-            #    out_features.append(x[:,0,:])
 
         feature = self.norm(x)
         cls = feature[:, 0]
         cls = self.pre_logits(cls)
         tokens = cls
         cls = self.head(cls)
-        return cls, tokens, out_features
+        return cls, tokens
 
 def resize_pos_embed(posemb, posemb_new):
     # Rescale the grid of position embeddings when loading from state_dict. Adapted from
@@ -622,5 +606,3 @@ def checkpoint_filter_fn(state_dict, model):
             v = resize_pos_embed(v, model.pos_embed)
         out_dict[k] = v
     return out_dict
-
-
