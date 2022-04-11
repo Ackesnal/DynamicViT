@@ -291,10 +291,12 @@ class Block(nn.Module):
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
             if cls_attn == False:
                 dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+                dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
+                x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
             else:
                 dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
-            dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
-            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
+                dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
+                x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+2), -1)
             return x, top_attns
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node, cls_attn = cls_attn)
