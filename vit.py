@@ -447,7 +447,9 @@ class VisionTransformerDiffPruning(nn.Module):
                 x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
-        x = x[:, 1:].mean(1)
+        top_attn = torch.argsort(out_attns[-1].mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] + 1 # B, K
+        x = batch_index_select(x, top_attn)
+        x = x.mean(1)
         x = self.pre_logits(x)
         features = x
         x = self.head(x)
