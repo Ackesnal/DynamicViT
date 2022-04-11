@@ -163,7 +163,7 @@ class Attention(nn.Module):
     def softmax_with_top_attn(self, attn, num_keep_node, cls_attn = False):
         if cls_attn == False:
             B, H, N, N = attn.shape
-
+            print(num_keep_node)
             top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
