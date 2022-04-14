@@ -182,17 +182,17 @@ class Attention(nn.Module):
             B, H, N, N = attn.shape
 
             top_attn = torch.argsort(attn.mean(1)[:,1,2:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-            cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            top_attn = torch.cat([cls_attn, cls_attn + 1, top_attn + 2], dim = 1) # B, K+2
+            cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+            top_attn = torch.cat([cls_attn, top_attn + 2], dim = 1) # B, K+1 不包含新加的cls_token
 
             attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
-            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
-            dim2 = top_attn.reshape(-1) # B*(K+2)
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+            dim2 = top_attn.reshape(-1) # B*(K+1)
             attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
-            attn_mask = attn_mask * (-100000.0) # 降低attn的比重
             attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
-
-            attn = attn + attn_mask
+            attn_mask[:,:,0,0] = 0.0 # 单独使得新加入的cls_token对自己的attn不为零
+            
+            attn = attn + attn_mask * (-100000.0) # 降低attn的比重
 
             return attn.softmax(-1), top_attn
 
@@ -221,7 +221,7 @@ class Attention(nn.Module):
                 attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-2, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
                 top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
                 cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-                top_attn = torch.cat([cls_attn, cls_attn+1, top_attn + 2], dim = 1) # B, K+1
+                top_attn = torch.cat([cls_attn, cls_attn + 1, top_attn + 2], dim = 1) # B, K+2
                 return top_attn
         
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
@@ -237,7 +237,7 @@ class Attention(nn.Module):
         else:
             if cls_attn == False:
                 attn_rt = attn # B,N,N
-                attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
+                attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node, cls_attn)
                 x = (attn @ v).transpose(1, 2).reshape(B, N, C)
                 x = self.proj(x)
                 x = self.proj_drop(x)
@@ -260,9 +260,10 @@ class Attention(nn.Module):
 
                 # generate the top attn mask
                 attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
-                dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
-                dim2 = top_attn.reshape(-1) # B*(K+2)
+                dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+                dim2 = top_attn.reshape(-1) # B*(K+1)
                 attn_mask[dim1, dim2] = 1.0
+                attn_mask[:,0] = 1.0
                 attn_mask = attn_mask.reshape(B,N,1)
                 attn_mask.requires_grad = False
 
@@ -291,11 +292,11 @@ class Block(nn.Module):
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
             if cls_attn == False:
                 dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-                dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
+                dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
                 x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
             else:
                 dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
-                dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+1)
+                dim2 = top_attns.reshape(-1) # B*(N*ratio+2)
                 x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+2), -1)
             return x, top_attns
         if num_keep_node is not None:
@@ -443,9 +444,11 @@ class VisionTransformerDiffPruning(nn.Module):
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         self.distill = distill
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
         self.pruning_loc = pruning_loc
         self.token_ratio = token_ratio
+        
+        self.pre_kd = nn.Linear(embed_dim, embed_dim)
+        self.pre_kd_act = nn.GELU()
 
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
@@ -518,7 +521,8 @@ class VisionTransformerDiffPruning(nn.Module):
         """
         x = x[:, 0]
         x = self.pre_logits(x)
-        features = x
+        features = self.pre_kd_act(self.pre_kd(x))
+        # features = None
         x = self.head(x)
             
         if self.training:
