@@ -289,7 +289,6 @@ class PredictorLG(nn.Module):
     """
     def __init__(self, embed_dim=384):
         super().__init__()
-        """
         self.in_conv = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim),
@@ -304,32 +303,8 @@ class PredictorLG(nn.Module):
             nn.Linear(embed_dim // 4, 2),
             nn.LogSoftmax(dim=-1)
         )
-        """
-        self.norm0 = nn.LayerNorm(embed_dim) #384
-        self.linear0 = nn.Linear(embed_dim, embed_dim//3) #128
-        self.act0 = nn.GELU()
-        
-        self.norm1 = nn.LayerNorm(embed_dim//3)
-        self.dpconv1 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim//3) #128
-        self.linear1 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1) #128
-        self.act1 = nn.GELU()
-        
-        self.norm2 = nn.LayerNorm(embed_dim//3)
-        self.dpconv2 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 5, stride = 1, padding = 2, groups = embed_dim//3) #128
-        self.linear2 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1) #128
-        self.act2 = nn.GELU()
-        
-        self.norm3 = nn.LayerNorm(embed_dim//3)
-        self.dpconv3 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim//3) #128
-        self.linear3 = nn.Conv2d(in_channels = embed_dim//3, out_channels = embed_dim//3, kernel_size = 1) #128
-        self.act3 = nn.GELU()
-        
-        self.norm4 = nn.LayerNorm(embed_dim//3)
-        self.linear4 = nn.Conv2d(in_channels = embed_dim//3, out_channels = 2, kernel_size = 1) #2
-        self.out = nn.LogSoftmax(dim=-1)
 
     def forward(self, x, policy):
-        """
         x = self.in_conv(x)
         B, N, C = x.size()
         local_x = x[:,:, :C//2]
@@ -338,22 +313,6 @@ class PredictorLG(nn.Module):
         x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
         
         return self.out_conv(x)
-        """
-        
-        B, N, C = x.size()
-        local_x = x[:,:, :C//2]
-        global_x = (x[:,:, C//2:] * policy).sum(dim=1, keepdim=True) / torch.sum(policy, dim=1, keepdim=True)
-        global_x = (x[:,:, C//2:]).sum(dim=1, keepdim=True) / N
-        x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1)
-        
-        x = x.reshape(B, int(N**0.5), int(N**0.5), C)
-        x = self.act0(self.linear0(self.norm0(x)))
-        x = self.act1(self.linear1(self.dpconv1(self.norm1(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
-        x = self.act2(self.linear2(self.dpconv2(self.norm2(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
-        x = self.act3(self.linear3(self.dpconv3(self.norm3(x).permute(0,3,1,2)))).permute(0,2,3,1) + x
-        x = self.out(self.linear4(self.norm4(x).permute(0,3,1,2)).permute(0,2,3,1))
-        
-        return x.reshape(B, N, 2)
 
 
 class VisionTransformerDiffPruning(nn.Module):
