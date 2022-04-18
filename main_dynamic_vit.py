@@ -34,6 +34,8 @@ def get_args_parser():
     parser.add_argument('--epochs', default=300, type=int)
 
     # Model parameters
+    parser.add_argument('--test_speed', action='store_true', help='whether to measure throughput of model')
+    parser.add_argument('--only_test_speed', action='store_true', help='only measure throughput of model')
     parser.add_argument('--arch', default='deit_small', type=str, help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
     parser.add_argument('--distillw', type=float, default=0.5, help='distill rate (default: 0.5)')
@@ -497,6 +499,29 @@ def main(args):
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
 
+    
+    if (args.test_speed):
+        # test model throughput for three times to ensure accuracy
+        inference_speed = speed_test(model)
+        print('inference_speed (inaccurate):', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+        inference_speed = speed_test(model)
+        print('inference_speed:', inference_speed, 'images/s')
+
+        def log_func1(*arg, **kwargs):
+            log1 = ' '.join([f'{xx}' for xx in arg])
+            log2 = ' '.join([f'{key}: {v}' for key, v in kwargs.items()])
+            log = log1 + "\n" + log2
+            log = log.strip('\n') + '\n'
+            if args.output_dir and utils.is_main_process():
+                with (output_dir / "speed_macs.txt").open("a") as f:
+                    f.write(log)
+        log_func1(inference_speed=inference_speed, GMACs=MACs * 1e-9)
+        log_func1(args=args)
+    if args.only_test_speed:
+        return
+    
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
@@ -563,6 +588,27 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    
+def speed_test(model, ntest=100, batchsize=64, x=None, **kwargs):
+    if x is None:
+        img_size = 224
+        x = torch.rand(batchsize, 3, img_size, img_size).cuda()
+    else:
+        batchsize = x.shape[0]
+    model.eval()
+
+    start = time.time()
+    for i in range(ntest):
+        model(x, **kwargs)
+    torch.cuda.synchronize()
+    end = time.time()
+
+    elapse = end - start
+    speed = batchsize * ntest / elapse
+    # speed = torch.tensor(speed, device=x.device)
+    # torch.distributed.broadcast(speed, src=0, async_op=False)
+    # speed = speed.item()
+    return speed
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DynamicViT training and evaluation script', parents=[get_args_parser()])

@@ -192,12 +192,11 @@ class Attention(nn.Module):
             k_weight = self.qkv.weight[C:2*C, :]
             k_bias = self.qkv.bias[C:2*C]
             q = F.linear(x[:,0:1,:], q_weight, q_bias)
-            k = F.linear(x[:,2:,:], k_weight, k_bias)
-            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-2, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
+            k = F.linear(x[:,1:,:], k_weight, k_bias)
+            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
             top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
             pre_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            cls_attn = torch.ones(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            top_attn = torch.cat([pre_attn, cls_attn, top_attn + 2], dim = 1) # B, K+2
+            top_attn = torch.cat([pre_attn, top_attn + 1], dim = 1) # B, K+2
             return top_attn
         
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
@@ -249,9 +248,9 @@ class Block(nn.Module):
             top_tokens = batch_index_select(x, top_attns)
             top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
-            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1)
+            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
             dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+2)
-            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+2), -1)
+            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
             return x
             
         if num_keep_node is not None:
@@ -373,7 +372,6 @@ class VisionTransformerDiffPruning(nn.Module):
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pred_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
 
@@ -405,7 +403,6 @@ class VisionTransformerDiffPruning(nn.Module):
 
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
-        trunc_normal_(self.pred_token, std=.02)
         
         self.apply(self._init_weights)
 
@@ -434,11 +431,9 @@ class VisionTransformerDiffPruning(nn.Module):
         x = self.patch_embed(x)
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        pred_tokens = self.pred_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-        x = torch.cat((pred_tokens, x), dim=1)
 
         p_count = 0
         out_attns = []
@@ -459,8 +454,8 @@ class VisionTransformerDiffPruning(nn.Module):
             else:
                 x = checkpoint.checkpoint(blk, x)
         
+        x = x[:, 0]
         x = self.norm(x)
-        x = x[:, 1]
         x = self.pre_logits(x)
         features = x
         x = self.head(x)
