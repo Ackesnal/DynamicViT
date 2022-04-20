@@ -184,20 +184,66 @@ class Attention(nn.Module):
         
         return attn.softmax(-1), top_attn
 
-    def forward(self, x, num_keep_node = None, test = False):
+    def forward(self, x, num_keep_node = None, test = False, top_attns = None, 
+                drop_path = None, norm1 = None, norm2 = None, mlp = None):
         B, N, C = x.shape
         if test == True:
+            original = x.reshape(B*N, C)
+            x = norm1(x)
+            
+            # 得到KQV的weight
             q_weight = self.qkv.weight[0:C, :]
             q_bias = self.qkv.bias[0:C]
             k_weight = self.qkv.weight[C:2*C, :]
             k_bias = self.qkv.bias[C:2*C]
-            q = F.linear(x[:,0:1,:], q_weight, q_bias)
-            k = F.linear(x[:,1:,:], k_weight, k_bias)
-            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
-            top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-            pre_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            top_attn = torch.cat([pre_attn, top_attn + 1], dim = 1) # B, K+2
-            return top_attn
+            v_weight = self.qkv.weight[2*C:, :]
+            v_bias = self.qkv.bias[2*C:]
+            
+            if top_attns == None:
+                # 计算需要的token是哪些
+                q = F.linear(x[:,0:1,:], q_weight, q_bias) # cls token的Q
+                k = F.linear(x, k_weight, k_bias) # img token的K
+                attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N-1
+                top_attns = torch.argsort(attn.mean(1)[:,0], dim = 1, descending=True)[:, :num_keep_node] # B,K
+                cls_attns = torch.zeros(B, 1, dtype = top_attns.dtype, device = top_attns.device) # B, 1
+                top_attns = torch.cat([cls_attns, top_attns + 1], dim = 1) # B, K+1
+                
+                # 选token 
+                offset = torch.arange(B, dtype=torch.long, device=x.device).view(B, 1) * N
+                top_attns = top_attns + offset
+                top_attns = top_attns.reshape(-1)
+                x = x.reshape(B*N, C)[top_attns].reshape(B, num_keep_node+1, C)        
+                
+                # 计算选出来的token的KQV
+                k = k.reshape(B*N, C)[top_attns.reshape(-1)].reshape(B, num_keep_node+1, self.num_heads, C // self.num_heads).permute(0,2,3,1)
+                q = F.linear(x, q_weight, q_bias).reshape(B, num_keep_node+1, self.num_heads, C // self.num_heads).permute(0,2,1,3)
+                v = F.linear(x, v_weight, v_bias).reshape(B, num_keep_node+1, self.num_heads, C // self.num_heads).permute(0,2,1,3)
+            
+            else:
+                x = x.reshape(B*N, C)[top_attns].reshape(B, num_keep_node+1, C)        
+                
+                # 计算选出来的token的KQV
+                qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+                q, k, v = qkv[0], qkv[1], qkv[2]
+                k = k.transpose(-1,-2)
+            
+            # 计算attention
+            attn = q @ k * self.scale
+            
+            # 计算x
+            x = (attn @ v).transpose(1, 2).reshape(B, num_keep_node+1, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            
+            # 计算后续
+            x = x + drop_path(x)
+            x = x + drop_path(mlp(norm2(x)))
+            
+            # 补回x
+            original[top_attns] = x.reshape(B*(num_keep_node+1), C)
+            x = original.reshape(B, N, C)
+            
+            return x, top_attns
         
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
@@ -241,17 +287,11 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, num_keep_node = None, test = False):
+    def forward(self, x, num_keep_node = None, test = False, top_attns = None):
         if test == True:
-            B, N, C = x.shape
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True)
-            top_tokens = batch_index_select(x, top_attns)
-            top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
-            top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
-            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-            dim2 = top_attns.reshape(-1) # 2, B*(N*ratio+2)
-            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
-            return x
+            x, top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True, top_attns = top_attns, drop_path = self.drop_path,
+                                     norm1 = self.norm1, norm2 = self.norm2, mlp = self.mlp)
+            return x, top_attns
             
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
@@ -449,7 +489,10 @@ class VisionTransformerDiffPruning(nn.Module):
                     out_attns.append(attn)
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+2),C  attn: B,N,1 
+                    if i % 3 == 0:
+                        x, top_attns = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+2),C  attn: B,N,1 
+                    else:
+                        x, top_attns = blk(x, num_keep_node = num_keep_node, test = True, top_attns = top_attns) # x: B,(N+2),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)

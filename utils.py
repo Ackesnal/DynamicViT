@@ -240,11 +240,14 @@ def init_distributed_mode(args):
 def batch_index_select(x, idx):
     if len(x.size()) == 3:
         B, N, C = x.size()
-        N_new = idx.size(1)
+        x = x.reshape(B*N, C)
         offset = torch.arange(B, dtype=torch.long, device=x.device).view(B, 1) * N
+        
+        N_new = idx.size(1)
         idx = idx + offset
-        out = x.reshape(B*N, C)[idx.reshape(-1)].reshape(B, N_new, C)
+        out = x[idx.reshape(-1)].reshape(B, N_new, C)
         return out
+        
     elif len(x.size()) == 2:
         B, N = x.size()
         N_new = idx.size(1)

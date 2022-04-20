@@ -500,7 +500,7 @@ def main(args):
                 loss_scaler.load_state_dict(checkpoint['scaler'])
 
     
-    if (args.test_speed):
+    if args.test_speed:
         # test model throughput for three times to ensure accuracy
         inference_speed = speed_test(model)
         print('inference_speed (inaccurate):', inference_speed, 'images/s')
@@ -508,17 +508,6 @@ def main(args):
         print('inference_speed:', inference_speed, 'images/s')
         inference_speed = speed_test(model)
         print('inference_speed:', inference_speed, 'images/s')
-
-        def log_func1(*arg, **kwargs):
-            log1 = ' '.join([f'{xx}' for xx in arg])
-            log2 = ' '.join([f'{key}: {v}' for key, v in kwargs.items()])
-            log = log1 + "\n" + log2
-            log = log.strip('\n') + '\n'
-            if args.output_dir and utils.is_main_process():
-                with (output_dir / "speed_macs.txt").open("a") as f:
-                    f.write(log)
-        log_func1(inference_speed=inference_speed, GMACs=MACs * 1e-9)
-        log_func1(args=args)
     if args.only_test_speed:
         return
     
