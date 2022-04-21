@@ -259,7 +259,8 @@ def main(args):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
+    
+    """
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
         batch_size=args.batch_size,
@@ -275,6 +276,7 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=False
     )
+    """
 
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
@@ -578,7 +580,7 @@ def main(args):
     print('Training time {}'.format(total_time_str))
 
     
-def speed_test(model, ntest=100, batchsize=64, x=None, **kwargs):
+def speed_test(model, ntest=100, batchsize=8, x=None, **kwargs):
     if x is None:
         img_size = 224
         x = torch.rand(batchsize, 3, img_size, img_size).cuda()
