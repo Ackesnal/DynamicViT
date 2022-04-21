@@ -203,19 +203,19 @@ class Attention(nn.Module):
                 # 计算需要的token是哪些
                 q = F.linear(x[:,0:1,:], q_weight, q_bias) # cls token的Q
                 k = F.linear(x, k_weight, k_bias) # img token的K
-                attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N-1
-                top_attns = torch.argsort(attn.mean(1)[:,0], dim = 1, descending=True)[:, :num_keep_node] # B,K
+                attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
+                top_attns = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B,K
                 cls_attns = torch.zeros(B, 1, dtype = top_attns.dtype, device = top_attns.device) # B, 1
                 top_attns = torch.cat([cls_attns, top_attns + 1], dim = 1) # B, K+1
                 
                 # 选token 
-                offset = torch.arange(B, dtype=torch.long, device=x.device).view(B, 1) * N
-                top_attns = top_attns + offset
-                top_attns = top_attns.reshape(-1)
+                offset = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device) * N
+                top_attns = top_attns + offset.view(-1, 1)
+                top_attns = top_attns.view(-1)
                 x = x.reshape(B*N, C)[top_attns].reshape(B, num_keep_node+1, C)        
                 
                 # 计算选出来的token的KQV
-                k = k.reshape(B*N, C)[top_attns.reshape(-1)].reshape(B, num_keep_node+1, self.num_heads, C // self.num_heads).permute(0,2,3,1)
+                k = k.reshape(B*N, C)[top_attns].reshape(B, num_keep_node+1, self.num_heads, C // self.num_heads).permute(0,2,3,1)
                 q = F.linear(x, q_weight, q_bias).reshape(B, num_keep_node+1, self.num_heads, C // self.num_heads).permute(0,2,1,3)
                 v = F.linear(x, v_weight, v_bias).reshape(B, num_keep_node+1, self.num_heads, C // self.num_heads).permute(0,2,1,3)
             
@@ -223,7 +223,7 @@ class Attention(nn.Module):
                 x = x.reshape(B*N, C)[top_attns].reshape(B, num_keep_node+1, C)        
                 
                 # 计算选出来的token的KQV
-                qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+                qkv = self.qkv(x).reshape(B, num_keep_node+1, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
                 q, k, v = qkv[0], qkv[1], qkv[2]
                 k = k.transpose(-1,-2)
             
