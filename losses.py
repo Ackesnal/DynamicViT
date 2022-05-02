@@ -161,7 +161,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         self.cut_loss = 0
         self.cut_weight = 10.0
-        
+        self.recover_loss = 0
+        self.recover_weight = 10.0
 
     def forward(self, inputs, outputs, labels):
         """
@@ -173,26 +174,22 @@ class DistillDiffPruningLoss(torch.nn.Module):
             labels: the labels for the base criterion
         """
 
-        cls_s, token_s, out_attns, out_attn_masks, out_features = outputs
+        cls_s, token_s, out_attns, out_attn_masks, out_xs = outputs
         
         # cut loss
         cut_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
-            if i < len(out_attn_masks)-2:
-                W = out_attns[i].softmax(-1) # B,H,N,N
-                B, H, N, _ = W.shape
-                samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
-                intra = W * samecut.reshape(B,1,N,N)
-                intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B,H,N, device=intra.device) * mask.detach().reshape(B,1,N))
-                cut_loss = cut_loss + intra_loss
-            else:
-                W = out_attns[i].softmax(-1) # B,H,N,N
-                B, H, N, _ = W.shape
-                samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
-                samecut[:,1:,0] = 0.0
-                intra = W * samecut.reshape(B,1,N,N)
-                intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B,H,N, device=intra.device) * mask.detach().reshape(B,1,N))
-                cut_loss = cut_loss + intra_loss
+            W = out_attns[i].softmax(-1) # B,H,N,N
+            B, H, N, _ = W.shape
+            samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
+            intra = W * samecut.reshape(B,1,N,N)
+            intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B,H,N, device=intra.device) * mask.detach().reshape(B,1,N))
+            cut_loss = cut_loss + intra_loss
+            
+        # recover loss
+        recover_loss = 0.0
+        for i, x_pair in enumerate(out_xs):
+            recover_loss = recover_loss + F.mse_loss(F.normalize(x_pair[0]), F.normalize(x_pair[1]))
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
@@ -219,20 +216,22 @@ class DistillDiffPruningLoss(torch.nn.Module):
                                                      log_target=True)
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc)  + self.distill_weight * 0.0 * cls_kl_loss + self.distill_weight * token_kl_loss  
+        loss = self.clf_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) * 0.0  + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.recover_weight * recover_loss 
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
             self.cls_distill_loss += cls_kl_loss.item()
             self.token_distill_loss += token_kl_loss.item()
             self.cut_loss += cut_loss.item()
+            self.recover_loss += recover_loss.item()
             self.count += 1
             if self.count == 100:
-                print('loss info: cls_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f' % (self.cls_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100, self.cut_loss/100))
+                print('loss info: cls_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f, recover_loss=%.4f' % (self.cls_loss/100, self.cls_distill_loss/100, self.token_distill_loss/100, self.cut_loss/100, self.recover_loss/100))
                 self.count = 0
                 self.cls_loss = 0
                 self.cls_distill_loss = 0
                 self.token_distill_loss = 0
                 self.cut_loss = 0
+                self.recover_loss = 0
         return loss
 
