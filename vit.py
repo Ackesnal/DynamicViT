@@ -188,7 +188,7 @@ class Attention(nn.Module):
             q = F.linear(x[:,0:1,:], q_weight, q_bias)
             k = F.linear(x[:,1:,:], k_weight, k_bias)
             attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
-            top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+            top_attn = torch.argsort(torch.diagonal(attn.mean(1)[:,1:,1:], dim1 = -1, dim2 = -2), dim = -1, descending=True)[:, :num_keep_node] # B, K 沿对角线找最大的token
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
             return top_attn
