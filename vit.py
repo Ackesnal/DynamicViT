@@ -222,9 +222,8 @@ class Attention(nn.Module):
             x_full = (attn_rt @ v).transpose(1, 2).reshape(B, N, C)
             x_full = self.proj(x_full)
             x_full = self.proj_drop(x_full)
-            x_full.requires_grad = False
 
-            return x, x_full, attn_mask, attn_rt
+            return x, x_full.detach(), attn_mask, attn_rt
             
 
 class Block(nn.Module):
