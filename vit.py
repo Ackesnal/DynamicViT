@@ -188,7 +188,7 @@ class Attention(nn.Module):
             q = F.linear(x[:,0:1,:], q_weight, q_bias)
             k = F.linear(x[:,1:,:], k_weight, k_bias)
             attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
-            top_attn = torch.argsort(torch.diagonal(attn.mean(1)[:,1:,1:], dim1 = -1, dim2 = -2), dim = -1, descending=True)[:, :num_keep_node] # B, K 沿对角线找最大的token
+            top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = -1, descending=True)[:, :num_keep_node] # B, K 
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
             return top_attn
@@ -248,7 +248,7 @@ class Block(nn.Module):
             top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
             dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
             dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
-            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
+            x[dim1, dim2] = top_tokens.reshape(B*num_keep_node+1, -1)
             return x, top_attns
         if num_keep_node is not None:
             x_part, x_full, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
