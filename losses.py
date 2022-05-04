@@ -175,7 +175,10 @@ class DistillDiffPruningLoss(torch.nn.Module):
         """
 
         cls_s, token_s, out_attns, out_attn_masks, out_xs = outputs
-        
+        with torch.no_grad():
+            cls_t, token_t, out_cls = self.teacher_model(inputs)
+            
+        """
         # cut loss
         cut_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
@@ -185,17 +188,17 @@ class DistillDiffPruningLoss(torch.nn.Module):
             intra = W * samecut.reshape(B,1,N,N)
             intra_loss = F.mse_loss(intra.sum(-1), torch.ones(B,H,N, device=intra.device) * mask.detach().reshape(B,1,N))
             cut_loss = cut_loss + intra_loss
-            
+        """
+        
         # recover loss
         recover_loss = 0.0
-        for i, x_pair in enumerate(out_xs):
-            recover_loss = recover_loss + F.mse_loss(F.normalize(x_pair[0]), F.normalize(x_pair[1]))
+        for i in range(len(out_xs)):
+            x_full = out_xs[i][0]
+            x_part = out_xs[i][1]
+            recover_loss = recover_loss + F.mse_loss(F.normalize(out_xs[i][0]), F.normalize(out_xs[i][1]))
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
-        
-        with torch.no_grad():
-            cls_t, token_t = self.teacher_model(inputs)
         
         # distilled classification loss
         cls_kl_loss = F.kl_div(
