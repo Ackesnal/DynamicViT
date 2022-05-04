@@ -162,7 +162,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.cut_loss = 0
         self.cut_weight = 10.0
         self.recover_loss = 0
-        self.recover_weight = 100.0
+        self.recover_weight = 10000.0
 
     def forward(self, inputs, outputs, labels):
         """
