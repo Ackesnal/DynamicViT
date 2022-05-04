@@ -441,14 +441,13 @@ class VisionTransformerDiffPruning(nn.Module):
         # Classifier head
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
-        # predictor_list = [PredictorLG(embed_dim) for _ in range(len(pruning_loc))]
-
-        # self.score_predictor = nn.ModuleList(predictor_list)
-
         self.distill = distill
 
         self.pruning_loc = pruning_loc
         self.token_ratio = token_ratio
+        
+        self.pre_kd = nn.Linear(embed_dim, embed_dim)
+        self.pre_kd_act = nn.GELU()
 
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
@@ -495,25 +494,22 @@ class VisionTransformerDiffPruning(nn.Module):
                     x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
-                    #if i % 3 == 2:
-                    #    out_features.append(x[:,0,:])
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
                 x = checkpoint.checkpoint(blk, x)
-                #if i % 3 == 2:
-                #    out_features.append(x[:,0,:])
         
         x = self.norm(x)
         x = x[:, 0]
         x = self.pre_logits(x)
-        features = x
+        if self.training:
+            feature = self.pre_kd_act(self.pre_kd(x))
         x = self.head(x)
         if self.training:
             if self.distill:
-                return x, features, out_attns, out_attn_masks, out_features
+                return x, feature, out_attns, out_attn_masks, out_features
             else:
                 return x, out_attns, out_attn_masks, out_features
         else:
@@ -623,8 +619,6 @@ class VisionTransformerTeacher(nn.Module):
         out_features = []
         for i, blk in enumerate(self.blocks):
             x = checkpoint.checkpoint(blk, x)
-            #if i % 3 == 2:
-            #    out_features.append(x[:,0,:])
 
         feature = self.norm(x)
         cls = feature[:, 0]
