@@ -242,7 +242,7 @@ class Block(nn.Module):
             
             x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
             x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
-            return x, x_full.detach(), x_part, top_attns
+            return x.contiguous(), x_full.detach(), x_part, top_attns
         else:
             x = x + self.drop_path(self.attn(self.norm1(x))) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
@@ -430,7 +430,7 @@ class VisionTransformerDiffPruning(nn.Module):
             if i in self.pruning_loc:
                 num_keep_node = int(init_n * self.token_ratio[p_count])
                 if self.training:
-                    x, x_full, x_part, attn_mask = blk(x, num_keep_node, False) # x: B,(N+1),C  attn: B,N,1 
+                    x, x_full, x_part, attn_mask = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     # out_attn_masks.append(attn_mask)
                     # out_attns.append(attn)
                     out_xs.append([x_full, x_part])
