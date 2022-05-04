@@ -178,17 +178,17 @@ class Attention(nn.Module):
 
         return attn.softmax(-1), top_attn
 
-    def forward(self, x, num_keep_node = None, test = False):
+    def forward(self, x, num_keep_node = None, rank = False):
         B, N, C = x.shape
-        if test == True:
+        if rank == True:
             q_weight = self.qkv.weight[0:C, :]
             q_bias = self.qkv.bias[0:C]
             k_weight = self.qkv.weight[C:2*C, :]
             k_bias = self.qkv.bias[C:2*C]
             q = F.linear(x[:,0:1,:], q_weight, q_bias)
             k = F.linear(x[:,1:,:], k_weight, k_bias)
-            attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N-1, self.num_heads, C // self.num_heads).permute(0,2,3,1) # B,H,1,N
-            top_attn = torch.argsort(attn.mean(1)[:,0,:], dim = -1, descending=True)[:, :num_keep_node] # B, K 
+            attn = q.reshape(B, 1, C) @ k.reshape(B, N-1, C).transpose(-1, -2) # B,1,N
+            top_attn = torch.argsort(attn[:,0,:], dim = -1, descending=True)[:, :num_keep_node] # B, K 
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
             return top_attn
@@ -197,34 +197,11 @@ class Attention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
         attn = (q @ k.transpose(-2, -1)) * self.scale
         
-        if num_keep_node is None:
-            attn = attn.softmax(dim=-1)
-            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-            return x
-        else:
-            attn_rt = attn # B,H,N,N
-            attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
-            
-            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-
-            # generate the top attn mask
-            attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
-            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
-            dim2 = top_attn.reshape(-1) # B*(K+1)
-            attn_mask[dim1, dim2] = 1.0
-            attn_mask = attn_mask.reshape(B,N,1)
-            attn_mask.requires_grad = False
-            
-            x_full = (attn_rt @ v).transpose(1, 2).reshape(B, N, C)
-            x_full = self.proj(x_full)
-            x_full = self.proj_drop(x_full)
-
-            return x, x_full.detach(), attn_mask, attn_rt
-            
+        attn = attn.softmax(dim=-1)
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
 
 class Block(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
@@ -242,19 +219,30 @@ class Block(nn.Module):
     def forward(self, x, num_keep_node = None, test = False):
         if test == True:
             B, N, C = x.shape
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = test)
-            top_tokens = batch_index_select(x, top_attns)
-            top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))
-            top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = true)
+            x_part = batch_index_select(x, top_attns)
+            x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
+            x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
             dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
             dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
-            x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
-            return x, top_attns
+            x[dim1, dim2] = x_part.reshape(B*(num_keep_node+1), -1)
+            return x
         if num_keep_node is not None:
-            x_part, x_full, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
-            x = x + self.drop_path(x_part) * attn_mask
-            x = x + self.drop_path(self.mlp(self.norm2(x))) * attn_mask
-            return x, attn_mask, attn, x_part, x_full
+            x_full = x
+            x_full = x_full + self.drop_path(self.attn(self.norm1(x_full))) 
+            x_full = x_full + self.drop_path(self.mlp(self.norm2(x_full)))
+            x_full = x_full.detach()
+            
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = true)
+            x_part = batch_index_select(x, top_attns)
+            x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
+            x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
+            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
+            x[dim1, dim2] = x_part.reshape(B*(num_keep_node+1), -1)
+            
+            x_full = batch_index_select(x_full, top_attns)
+            return x, x_full, x_part, top_attns
         else:
             x = x + self.drop_path(self.attn(self.norm1(x))) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
@@ -436,34 +424,37 @@ class VisionTransformerDiffPruning(nn.Module):
         p_count = 0
         out_attns = []
         out_attn_masks = []
-        out_x = []
+        out_xs = []
         init_n = x.shape[1] - 1
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
+                num_keep_node = int(init_n * self.token_ratio[p_count])
                 if self.training:
-                    num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, attn_mask, attn, x_part, x_full = checkpoint.checkpoint(blk, x, num_keep_node, False) # x: B,(N+1),C  attn: B,N,1 
+                    x, x_full, x_part, attn_mask = checkpoint.checkpoint(blk, x, num_keep_node, False) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
-                    out_attns.append(attn)
-                    out_x.append([x_part, x_full])
+                    # out_attns.append(attn)
+                    out_xs.append([x_full, x_part])
                 else:
-                    num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, top_attns = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
+                    x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
-                x = checkpoint.checkpoint(blk, x)
+                if self.training:
+                    x = checkpoint.checkpoint(blk, x)
+                else:
+                    x = blk(x)
         
         x = self.norm(x)
         x = x[:, 0]
         x = self.pre_logits(x)
-        features = self.pre_kd_act(self.pre_kd(x))
+        if self.training:
+            feature = self.pre_kd_act(self.pre_kd(x))
         x = self.head(x)
             
         if self.training:
             if self.distill:
-                return x, features, out_attns, out_attn_masks, out_x
+                return x, feature, out_attns, out_attn_masks, out_xs
             else:
-                return x, out_attns, out_attn_masks, out_x
+                return x, out_attns, out_attn_masks, out_xs
         else:
             return x
 
@@ -567,15 +558,17 @@ class VisionTransformerTeacher(nn.Module):
         x = x + self.pos_embed
         x = self.pos_drop(x)
         
+        out_xs = []
         for i, blk in enumerate(self.blocks):
-            x = checkpoint.checkpoint(blk, x)
+            x = blk(x)
+            out_xs.append(x)
 
-        feature = self.norm(x)
-        cls = feature[:, 0]
-        cls = self.pre_logits(cls)
-        tokens = cls
-        cls = self.head(cls)
-        return cls, tokens
+        x = self.norm(x)
+        x = x[:, 0]
+        x = self.pre_logits(x)
+        feature = x
+        x = self.head(x)
+        return x, feature, out_xs
 
 def resize_pos_embed(posemb, posemb_new):
     # Rescale the grid of position embeddings when loading from state_dict. Adapted from
