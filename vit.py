@@ -229,19 +229,18 @@ class Block(nn.Module):
             return x
         if num_keep_node is not None:
             x_full = x
-            x_full = x_full + self.drop_path(self.attn(self.norm1(x_full))) 
-            x_full = x_full + self.drop_path(self.mlp(self.norm2(x_full)))
-            x_full = x_full.detach()
-            
             top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = true)
             x_part = batch_index_select(x, top_attns)
-            x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
-            x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
+            
+            x_full = x_full + self.drop_path(self.attn(self.norm1(x_full))) 
+            x_full = x_full + self.drop_path(self.mlp(self.norm2(x_full)))
+            x_full = batch_index_select(x_full, top_attns)
             dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
             dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
-            x[dim1, dim2] = x_part.reshape(B*(num_keep_node+1), -1)
+            x[dim1, dim2] = x_full.reshape(B*(num_keep_node+1), -1)
             
-            x_full = batch_index_select(x_full, top_attns)
+            x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
+            x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
             return x, x_full, x_part, top_attns
         else:
             x = x + self.drop_path(self.attn(self.norm1(x))) 
@@ -431,7 +430,7 @@ class VisionTransformerDiffPruning(nn.Module):
                 num_keep_node = int(init_n * self.token_ratio[p_count])
                 if self.training:
                     x, x_full, x_part, attn_mask = checkpoint.checkpoint(blk, x, num_keep_node, False) # x: B,(N+1),C  attn: B,N,1 
-                    out_attn_masks.append(attn_mask)
+                    # out_attn_masks.append(attn_mask)
                     # out_attns.append(attn)
                     out_xs.append([x_full, x_part])
                 else:
