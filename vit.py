@@ -191,7 +191,13 @@ class Attention(nn.Module):
             top_attn = torch.argsort(attn[:,0,:], dim = -1, descending=True)[:, :num_keep_node] # B, K 
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
-            return top_attn
+            
+            attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
+            dim2 = top_attn.reshape(-1) # B*(K+2)
+            attn_mask[dim1, dim2] = 1.0
+            attn_mask = attn_mask.reshape(B,N,1)
+            return top_attn, attn_mask
         
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
@@ -219,7 +225,7 @@ class Block(nn.Module):
     def forward(self, x, num_keep_node = None, test = False):
         if test == True:
             B, N, C = x.shape
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = True)
+            top_attns, attn_mask = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = True)
             x_part = batch_index_select(x, top_attns)
             x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
             x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
@@ -229,20 +235,17 @@ class Block(nn.Module):
             return x
         if num_keep_node is not None:
             B, N, C = x.shape
-            x_full = x
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = True)
+            top_attns, attn_mask = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = True)
+            
             x_part = batch_index_select(x, top_attns)
-            
-            x_full = x_full + self.drop_path(self.attn(self.norm1(x_full))) 
-            x_full = x_full + self.drop_path(self.mlp(self.norm2(x_full)))
-            x_full = batch_index_select(x_full, top_attns)
-            dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-            dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
-            x[dim1, dim2] = x_full.reshape(B*(num_keep_node+1), -1)
-            
             x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
             x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
-            return x.contiguous(), x_full.detach(), x_part, top_attns
+            
+            x = x + self.drop_path(self.attn(self.norm1(x))) * attn_mask
+            x = x + self.drop_path(self.mlp(self.norm2(x))) * attn_mask
+            x_full = batch_index_select(x, top_attns).detach()
+            
+            return x, x_full, x_part, top_attns
         else:
             x = x + self.drop_path(self.attn(self.norm1(x))) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
