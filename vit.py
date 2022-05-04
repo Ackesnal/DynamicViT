@@ -242,7 +242,7 @@ class Block(nn.Module):
             
             x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
             x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
-            return x, x_full, x_part, top_attns
+            return x, x_full.detach(), x_part, top_attns
         else:
             x = x + self.drop_path(self.attn(self.norm1(x))) 
             x = x + self.drop_path(self.mlp(self.norm2(x)))
