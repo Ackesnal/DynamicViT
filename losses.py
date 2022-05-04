@@ -223,7 +223,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             self.cls_loss += cls_loss.item()
             self.cls_distill_loss += cls_kl_loss.item()
             self.token_distill_loss += token_kl_loss.item()
-            self.cut_loss += cut_loss.item()
+            #self.cut_loss += cut_loss.item()
             self.recover_loss += recover_loss.item()
             self.count += 1
             if self.count == 100:
