@@ -219,7 +219,7 @@ class Block(nn.Module):
     def forward(self, x, num_keep_node = None, test = False):
         if test == True:
             B, N, C = x.shape
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = true)
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = True)
             x_part = batch_index_select(x, top_attns)
             x_part = x_part + self.drop_path(self.attn(self.norm1(x_part)))
             x_part = x_part + self.drop_path(self.mlp(self.norm2(x_part)))
@@ -229,7 +229,7 @@ class Block(nn.Module):
             return x
         if num_keep_node is not None:
             x_full = x
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = true)
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = True)
             x_part = batch_index_select(x, top_attns)
             
             x_full = x_full + self.drop_path(self.attn(self.norm1(x_full))) 
