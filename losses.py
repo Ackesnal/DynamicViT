@@ -160,7 +160,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.distill_weight = distill_weight
         
         self.cut_loss = 0
-        self.cut_weight = 2.0
+        self.cut_weight = 100.0
         
 
     def forward(self, inputs, outputs, labels):
@@ -183,14 +183,17 @@ class DistillDiffPruningLoss(torch.nn.Module):
             W = F.softmax(out_attns[i], dim = -1) # B,N,N
             
             diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+            diffcut[:,:,0] = 0.0
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
             
             # cut
-            cut = (diffcut*W) / 2 # 组间距离
-            assoc = (samecut*W) / 2 # 组内距离
-            normalized_cut = F.mse_loss(cut.sum(-1), torch.zeros(B, N, dtype=cut.dtype, device=cut.device)) + F.mse_loss(assoc.sum(-1), mask.detach().squeeze()) # B
+            inter_dist = (diffcut*W).sum(-1) # 组间距离
+            inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
+            intra_dist = (samecut*W).sum(-1)# 组内距离
+            intra_loss = F.mse_loss(intra_dist, mask.detach().squeeze())
+            cut =  intra_loss + inter_loss # B
             
-            cut_loss = cut_loss + normalized_cut
+            cut_loss = cut_loss + cut
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
@@ -208,15 +211,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
         
         # distilled feature loss
         token_kl_loss = 0.0
-        """
-        for i in range(len(student_features)):
-            token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(student_features[i], dim=-1),
-                                                     F.log_softmax(teacher_features[i], dim=-1),
-                                                     reduction='batchmean',
-                                                     log_target=True) / len(student_features)
-        """
         if len(token_s.shape) == 2:
-            token_kl_loss = token_kl_loss + F.mse_loss(token_s, token_t)
+            token_kl_loss = token_kl_loss + F.mse_loss(F.normalize(token_s), F.normalize(token_t))
         else:
             token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(token_s * out_attn_masks[-1][:,1:,:], dim=-1),
                                                      F.log_softmax(token_t * out_attn_masks[-1][:,1:,:], dim=-1),
