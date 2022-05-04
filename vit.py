@@ -228,6 +228,7 @@ class Block(nn.Module):
             x[dim1, dim2] = x_part.reshape(B*(num_keep_node+1), -1)
             return x
         if num_keep_node is not None:
+            B, N, C = x.shape
             x_full = x
             top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, rank = True)
             x_part = batch_index_select(x, top_attns)
