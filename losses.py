@@ -177,10 +177,10 @@ class DistillDiffPruningLoss(torch.nn.Module):
         cls_s, token_s, out_attns, out_attn_masks, out_xs = outputs
         with torch.no_grad():
             cls_t, token_t, out_cls = self.teacher_model(inputs)
-            
-        """
+        
         # cut loss
         cut_loss = 0.0
+        """
         for i, mask in enumerate(out_attn_masks):
             W = out_attns[i].softmax(-1) # B,H,N,N
             B, H, N, _ = W.shape
@@ -193,8 +193,6 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # recover loss
         recover_loss = 0.0
         for i in range(len(out_xs)):
-            x_full = out_xs[i][0]
-            x_part = out_xs[i][1]
             recover_loss = recover_loss + F.mse_loss(F.normalize(out_xs[i][0]), F.normalize(out_xs[i][1]))
         
         # classification loss
@@ -219,7 +217,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                                                      log_target=True)
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) * 0.0  + self.distill_weight * cls_kl_loss + self.distill_weight * 100 * token_kl_loss + self.recover_weight * recover_loss 
+        loss = self.clf_weight * cls_loss + self.cut_weight * cut_loss / len(self.pruning_loc) + self.distill_weight * cls_kl_loss + self.distill_weight * 100 * token_kl_loss + self.recover_weight * recover_loss 
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
