@@ -193,8 +193,8 @@ class Attention(nn.Module):
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
             
             attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
-            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+2).reshape(-1) # B*(K+2)
-            dim2 = top_attn.reshape(-1) # B*(K+2)
+            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+            dim2 = top_attn.reshape(-1) # B*(K+1)
             attn_mask[dim1, dim2] = 1.0
             attn_mask = attn_mask.reshape(B,N,1)
             return top_attn, attn_mask
