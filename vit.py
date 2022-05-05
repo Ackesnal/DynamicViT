@@ -203,7 +203,7 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
             return x
         else:
-            attn_rt = attn.mean(1) # B,N,N
+            attn_rt = attn # B,H,N,N
             attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
