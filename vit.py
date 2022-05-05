@@ -320,58 +320,6 @@ class HybridEmbed(nn.Module):
         x = self.proj(x).flatten(2).transpose(1, 2)
         return x
 
-
-class PredictorLG(nn.Module):
-    """ Image to Patch Embedding
-    """
-    def __init__(self, embed_dim=384):
-        super().__init__()
-        
-        self.norm0 = nn.LayerNorm(embed_dim) #384
-        self.linear0 = nn.Linear(embed_dim, embed_dim) #384
-        self.pool0 = torch.nn.AdaptiveAvgPool2d(14) #384
-        self.act0 = nn.GELU() #128
-        
-        self.conv1 = nn.Conv2d(in_channels = embed_dim, out_channels = embed_dim, kernel_size = 3, stride = 1, padding = 1, groups = embed_dim) #384
-        self.linear1 = nn.Linear(embed_dim, embed_dim // 3) #128
-        self.act1 = nn.GELU() #128
-        
-        self.conv2 = nn.Conv2d(in_channels = embed_dim // 3, out_channels = embed_dim // 3, kernel_size = 5, stride = 1, padding = 2, groups = embed_dim // 3) #128
-        self.linear2 = nn.Linear(embed_dim // 3, embed_dim // 6) #64
-        self.act2 = nn.GELU() #64
-        
-        self.conv3 = nn.Conv2d(in_channels = embed_dim // 6, out_channels = embed_dim // 6, kernel_size = 7, stride = 1, padding = 3, groups = embed_dim // 6) #64
-        self.linear3 = nn.Linear(embed_dim // 6, 2) #2
-        
-        self.out = nn.LogSoftmax(dim=-1)
-        
-
-    def forward(self, x, policy):
-        B, N, C = x.size()
-        
-        x = x.reshape(B, int(N**0.5), int(N**0.5), C)
-        
-        x = self.norm0(x)
-        x = self.linear0(x)
-        x = self.pool0(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.act0(x)
-        
-        x = self.conv1(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.linear1(x)
-        x = self.act1(x)
-        
-        x = self.conv2(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.linear2(x)
-        x = self.act2(x)
-        
-        x = self.conv3(x.permute(0,3,1,2)).permute(0,2,3,1)
-        x = self.linear3(x)
-        
-        x = self.out(x)
-        
-        return x.reshape(B, N, 2)
-        
-
 class VisionTransformerDiffPruning(nn.Module):
     """ Vision Transformer
 
