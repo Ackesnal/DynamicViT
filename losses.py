@@ -105,18 +105,16 @@ class DiffPruningLoss(torch.nn.Module):
         cut_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
             B, N, _ = mask.shape
-            K = mask.squeeze()[0].mean()
-            W = F.softmax(out_attns[i], dim = -1) # B,N,N
+            W = out_attns[i].softmax(dim = -1) # B,H,N,N
             
             diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
-            diffcut[:,:,0] = 0.0
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
             
             # cut
-            inter_dist = (diffcut*W).sum(-1) # 组间距离
-            inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
-            intra_dist = (samecut*W).sum(-1)# 组内距离
-            intra_loss = F.mse_loss(intra_dist, mask.detach().squeeze())
+            inter_dist = (diffcut.reshape(B,1,N,N)*W).sum(-1) # 组间距离，B,H,N
+            inter_loss = F.mse_loss(inter_dist, torch.zeros(B, H, N, dtype=inter_dist.dtype, device=inter_dist.device))
+            intra_dist = (samecut.reshape(B,1,N,N)*W).sum(-1) # 组内距离，B,H,N
+            intra_loss = F.mse_loss(intra_dist, mask.reshape(B,1,N).expand(B,H,N))
             cut =  intra_loss + inter_loss # B
             
             cut_loss = cut_loss + cut
@@ -163,7 +161,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.distill_weight = distill_weight
         
         self.cut_loss = 0
-        self.cut_weight = 100.0
+        self.cut_weight = 20.0
         
 
     def forward(self, inputs, outputs, labels):
@@ -182,18 +180,16 @@ class DistillDiffPruningLoss(torch.nn.Module):
         cut_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
             B, N, _ = mask.shape
-            K = mask.squeeze()[0].mean()
-            W = F.softmax(out_attns[i], dim = -1) # B,N,N
+            W = out_attns[i].softmax(dim = -1) # B,H,N,N
             
             diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
-            diffcut[:,:,0] = 0.0
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
             
             # cut
-            inter_dist = (diffcut*W).sum(-1) # 组间距离
-            inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
-            intra_dist = (samecut*W).sum(-1)# 组内距离
-            intra_loss = F.mse_loss(intra_dist, mask.detach().squeeze())
+            inter_dist = (diffcut.reshape(B,1,N,N)*W).sum(-1) # 组间距离，B,H,N
+            inter_loss = F.mse_loss(inter_dist, torch.zeros(B, H, N, dtype=inter_dist.dtype, device=inter_dist.device))
+            intra_dist = (samecut.reshape(B,1,N,N)*W).sum(-1) # 组内距离，B,H,N
+            intra_loss = F.mse_loss(intra_dist, mask.reshape(B,1,N).expand(B,H,N))
             cut =  intra_loss + inter_loss # B
             
             cut_loss = cut_loss + cut
@@ -223,7 +219,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                                                      log_target=True)
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss * 100 + self.cut_weight * cut_loss / len(self.pruning_loc)
+        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss * 200 + self.cut_weight * cut_loss / len(self.pruning_loc)
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
