@@ -106,6 +106,7 @@ class DiffPruningLoss(torch.nn.Module):
         for i, mask in enumerate(out_attn_masks):
             B, N, _ = mask.shape
             W = out_attns[i].softmax(dim = -1) # B,H,N,N
+            H = W.shape[1]
             
             diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
