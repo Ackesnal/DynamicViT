@@ -84,7 +84,7 @@ class DiffPruningLoss(torch.nn.Module):
         
         self.cls_weight = clf_weight
         self.ratio_weight = ratio_weight
-        self.cut_weight = 10.0
+        self.cut_weight = 20.0
         
         self.mseloss = torch.nn.MSELoss()
 
