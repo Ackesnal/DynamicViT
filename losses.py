@@ -119,6 +119,7 @@ class DiffPruningLoss(torch.nn.Module):
             cut =  intra_loss + inter_loss # B
             
             cut_loss = cut_loss + cut
+            del out_attns[i], out_attn_masks[i]
         
         # classification loss
         cls_loss = self.base_criterion(pred, labels)
