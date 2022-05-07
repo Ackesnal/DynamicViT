@@ -394,10 +394,6 @@ class VisionTransformerDiffPruning(nn.Module):
         self.pruning_loc = pruning_loc
         self.token_ratio = token_ratio
         
-        if self.distill:
-            self.pre_kd = nn.Linear(embed_dim, embed_dim)
-            self.pre_kd_act = nn.GELU()
-
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
         self.apply(self._init_weights)
@@ -454,7 +450,7 @@ class VisionTransformerDiffPruning(nn.Module):
         x = x[:, 0]
         x = self.pre_logits(x)
         if self.training and self.distill:
-            feature = self.pre_kd_act(self.pre_kd(x))
+            feature = x
         x = self.head(x)
         if self.training:
             if self.distill:
