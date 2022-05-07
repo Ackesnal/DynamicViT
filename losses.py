@@ -215,7 +215,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # distilled feature loss
         token_kl_loss = 0.0
         if len(token_s.shape) == 2:
-            token_kl_loss = token_kl_loss + F.mse_loss(F.normalize(token_s), F.normalize(token_t))
+            token_kl_loss = token_kl_loss + F.mse_loss(token_s, token_t)
         else:
             token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(token_s * out_attn_masks[-1][:,1:,:], dim=-1),
                                                      F.log_softmax(token_t * out_attn_masks[-1][:,1:,:], dim=-1),
@@ -223,7 +223,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                                                      log_target=True)
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss * 300 + self.cut_weight * cut_loss / len(self.pruning_loc)
+        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc)
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()
