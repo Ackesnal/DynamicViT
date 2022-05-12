@@ -84,7 +84,7 @@ class DiffPruningLoss(torch.nn.Module):
         
         self.cls_weight = clf_weight
         self.ratio_weight = ratio_weight
-        self.cut_weight = 20.0
+        self.cut_weight = 10.0
         
         self.mseloss = torch.nn.MSELoss()
 
@@ -109,6 +109,7 @@ class DiffPruningLoss(torch.nn.Module):
             H = W.shape[1]
             
             diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+            diffcut[:,:,0] = 0.0
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
             
             # cut
@@ -116,7 +117,7 @@ class DiffPruningLoss(torch.nn.Module):
             inter_loss = F.mse_loss(inter_dist, torch.zeros(B, H, N, dtype=inter_dist.dtype, device=inter_dist.device))
             intra_dist = (samecut.reshape(B,1,N,N)*W).sum(-1) # 组内距离，B,H,N
             intra_loss = F.mse_loss(intra_dist, mask.reshape(B,1,N).expand(B,H,N))
-            cut =  intra_loss + inter_loss # B
+            cut =  intra_loss # + inter_loss # B
             
             cut_loss = cut_loss + cut
             del out_attns[i], out_attn_masks[i]
@@ -182,21 +183,22 @@ class DistillDiffPruningLoss(torch.nn.Module):
         cut_loss = 0.0
         for i, mask in enumerate(out_attn_masks):
             B, N, _ = mask.shape
-            W = out_attns[i].softmax(dim = -1) # B,H,N,N
-            H = W.shape[1]
+            W = out_attns[i].mean(1).softmax(dim = -1) # B,H,N,N
+            #H = W.shape[1]
             
             diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+            diffcut[:,:,0] = 0.0
             samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
             
             # cut
-            inter_dist = (diffcut.reshape(B,1,N,N)*W).sum(-1) # 组间距离，B,H,N
-            inter_loss = F.mse_loss(inter_dist, torch.zeros(B, H, N, dtype=inter_dist.dtype, device=inter_dist.device))
-            intra_dist = (samecut.reshape(B,1,N,N)*W).sum(-1) # 组内距离，B,H,N
-            intra_loss = F.mse_loss(intra_dist, mask.reshape(B,1,N).expand(B,H,N))
-            cut =  intra_loss + inter_loss # B
+            # inter_dist = (diffcut.reshape(B,N,N)*W).sum(-1) # 组间距离，B,N
+            # inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
+            intra_dist = (samecut*W).sum(-1) # 组内距离，B,N
+            intra_loss = F.mse_loss(intra_dist, mask.reshape(B,N))
             
-            cut_loss = cut_loss + cut
-            del out_attns[i], out_attn_masks[i]
+            cut_loss = cut_loss + intra_loss # + inter_loss # B
+            if i < len(out_attn_masks) - 1:
+                del out_attns[i], out_attn_masks[i]
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
@@ -215,15 +217,14 @@ class DistillDiffPruningLoss(torch.nn.Module):
         # distilled feature loss
         token_kl_loss = 0.0
         if len(token_s.shape) == 2:
-            token_kl_loss = token_kl_loss + F.mse_loss(token_s, token_t)
+            token_kl_loss = token_kl_loss + F.mse_loss(F.normalize(token_s), F.normalize(token_t))
         else:
-            token_kl_loss = token_kl_loss + F.kl_div(F.log_softmax(token_s * out_attn_masks[-1][:,1:,:], dim=-1),
-                                                     F.log_softmax(token_t * out_attn_masks[-1][:,1:,:], dim=-1),
-                                                     reduction='batchmean',
-                                                     log_target=True)
+            token_kl_loss = token_kl_loss + F.mse_loss(F.normalize(token_s * out_attn_masks[-1], dim=-1),
+                                                       F.normalize(token_t * out_attn_masks[-1], dim=-1),
+                                                       reduction = "sum") / token_s.shape[0] / (self.keep_ratio[-1] * token_s.shape[1])
         
         # print(cls_loss, pred_loss)
-        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss + self.cut_weight * cut_loss / len(self.pruning_loc)
+        loss = self.clf_weight * cls_loss + self.distill_weight * cls_kl_loss + self.distill_weight * token_kl_loss * 100 + self.cut_weight * cut_loss / len(self.pruning_loc)
 
         if self.print_mode:
             self.cls_loss += cls_loss.item()

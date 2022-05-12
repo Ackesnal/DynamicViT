@@ -161,7 +161,7 @@ class Attention(nn.Module):
             cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
             top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
             return top_attn
-        
+            
         if num_keep_node is None:
             attn = attn.softmax(dim=-1)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -169,7 +169,7 @@ class Attention(nn.Module):
             x = self.proj_drop(x)
             return x
         else:
-            attn_rt = attn.mean(1) # B,N,N
+            attn_rt = attn # B,H,N,N
             attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
@@ -184,8 +184,6 @@ class Attention(nn.Module):
             attn_mask.requires_grad = False
             
             return x, attn_mask, attn_rt
-
-        return x
         
 class Block(nn.Module):
     '''
@@ -206,6 +204,16 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=self.mlp_hidden_dim, act_layer=act_layer, drop=drop, group=group)
 
     def forward(self, x, num_keep_node = None, test = False):
+        if test == True:
+            B, N, C = x.shape
+            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True)
+            top_tokens = batch_index_select(x, top_attns)
+            top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))/self.skip_lam
+            top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))/self.skip_lam
+            index = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+            top_attns = torch.stack((index, top_attns.reshape(-1))) # 2, B*(N*ratio+1)
+            x[top_attns.cpu().numpy()] = top_tokens.reshape(B*(num_keep_node+1), -1)
+            return x
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node)
             x = x + self.drop_path(tmp)/self.skip_lam * attn_mask
@@ -652,19 +660,21 @@ class LVViTDiffPruning(nn.Module):
                     out_attns.append(attn)
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
-                    x, _, _ = blk(x, num_keep_node, True) # x: B,(N+1),C  attn: B,N,1 
-                p_count += 1
+                    x = blk(x, num_keep_node, True) # x: B,(N+1),C  attn: B,N,1 
+                p_count = p_count + 1
             else:
-                x = blk(x)
+                x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
+        if self.distill:
+            feature = x
         x_cls = self.head(x[:,0])
         x_aux = self.aux_head(x[:,1:])
         final_pred =  x_cls + 0.5 * x_aux.max(1)[0]
 
         if self.training:
             if self.distill:
-                return x_cls, x_aux, out_attns, out_attn_masks, out_features
+                return final_pred, feature, out_attns, out_attn_masks, out_features
             else:
                 return final_pred, out_attns, out_attn_masks, out_features
         else:
@@ -778,6 +788,8 @@ class LVViT_Teacher(nn.Module):
             x = checkpoint.checkpoint(blk, x)
         
         x = self.norm(x)
+        feature = x
         x_cls = self.head(x[:,0])
         x_aux = self.aux_head(x[:,1:])
-        return x_cls, x_aux, None
+        final_pred =  x_cls + 0.5 * x_aux.max(1)[0]
+        return final_pred, feature, None
