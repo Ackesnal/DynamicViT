@@ -197,6 +197,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
             intra_loss = F.mse_loss(intra_dist, mask.reshape(B,N))
             
             cut_loss = cut_loss + intra_loss # + inter_loss # B
+            if i < len(out_attn_masks) - 1:
+                del out_attns[i], out_attn_masks[i]
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
