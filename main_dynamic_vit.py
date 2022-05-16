@@ -170,6 +170,8 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     parser.add_argument('--distill', action='store_true', default=False, help='Enabling distributed evaluation')
     parser.add_argument('--base_rate', type=float, default=0.7)
+    
+    parser.add_argument('--loss_type', default="both")
 
     return parser
 
@@ -469,15 +471,15 @@ def main(args):
     if args.distill:
         if 'lvvit' in args.arch: 
             criterion = DistillDiffPruningLoss(
-                model_t, criterion, clf_weight=1.0, keep_ratio=KEEP_RATE, ratio_weight=args.ratiow, distill_weight=args.distillw
+                model_t, criterion, clf_weight=1.0, keep_ratio=KEEP_RATE, ratio_weight=args.ratiow, distill_weight=args.distillw, loss=args.loss_type
             )
         else:
             criterion = DistillDiffPruningLoss(
-                model_t, criterion, clf_weight=1.0, keep_ratio=KEEP_RATE, mse_token=True, ratio_weight=args.ratiow, distill_weight=args.distillw
+                model_t, criterion, clf_weight=1.0, keep_ratio=KEEP_RATE, mse_token=True, ratio_weight=args.ratiow, distill_weight=args.distillw, loss=args.loss_type
             )
     else:
         criterion = DiffPruningLoss(
-            criterion, clf_weight=1.0, keep_ratio=KEEP_RATE
+            criterion, clf_weight=1.0, keep_ratio=KEEP_RATE, loss=args.loss_type
         )
 
     output_dir = Path(args.output_dir)

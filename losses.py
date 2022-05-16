@@ -71,7 +71,7 @@ class DiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=0.5, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True):
+    def __init__(self, base_criterion: torch.nn.Module, dynamic=False, ratio_weight=0.5, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, print_mode=True, loss="both"):
         super().__init__()
         self.base_criterion = base_criterion
         self.pruning_loc = pruning_loc
@@ -145,7 +145,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
     This module wraps a standard criterion and adds an extra knowledge distillation loss by
     taking a teacher model prediction and using it as additional supervision.
     """
-    def __init__(self, teacher_model, base_criterion: torch.nn.Module, ratio_weight=2.0, distill_weight=0.5, dynamic=False, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, mse_token=False, print_mode=True):
+    def __init__(self, teacher_model, base_criterion: torch.nn.Module, ratio_weight=2.0, distill_weight=0.5, dynamic=False, pruning_loc=[3,6,9], keep_ratio=[0.75, 0.5, 0.25], clf_weight=0, mse_token=False, print_mode=True, loss="both"):
         super().__init__()
         self.teacher_model = teacher_model
         self.base_criterion = base_criterion
@@ -164,7 +164,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.distill_weight = distill_weight
         
         self.cut_loss = 0
-        self.cut_weight = 20.0
+        self.cut_weight = 50.0
+        self.loss_type = loss
         
 
     def forward(self, inputs, outputs, labels):
@@ -186,19 +187,33 @@ class DistillDiffPruningLoss(torch.nn.Module):
             W = out_attns[i].mean(1).softmax(dim = -1) # B,H,N,N
             #H = W.shape[1]
             
-            diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
-            diffcut[:,:,0] = 0.0
-            samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
-            
-            # cut
-            # inter_dist = (diffcut.reshape(B,N,N)*W).sum(-1) # 组间距离，B,N
-            # inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
-            intra_dist = (samecut*W).sum(-1) # 组内距离，B,N
-            intra_loss = F.mse_loss(intra_dist, mask.reshape(B,N))
-            
-            cut_loss = cut_loss + intra_loss # + inter_loss # B
+            if self.loss_type == "both":
+                diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+                samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
+                # cut
+                inter_dist = (diffcut.reshape(B,N,N)*W).sum(-1) # 组间距离，B,N
+                inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
+                intra_dist = (samecut*W).sum(-1) # 组内距离，B,N
+                intra_loss = F.mse_loss(intra_dist, mask.reshape(B,N))
+                cut_loss = cut_loss + inter_loss + intra_loss # B
+            elif self.loss_type == "intra":
+                samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
+                # cut
+                intra_dist = (samecut*W).sum(-1) # 组内距离，B,N
+                intra_loss = F.mse_loss(intra_dist, mask.reshape(B,N))
+                cut_loss = cut_loss + intra_loss # B
+            elif self.loss_type == "inter":
+                diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+                diffcut[:,:,0] - 0.0
+                # cut
+                inter_dist = (diffcut.reshape(B,N,N)*W).sum(-1) # 组间距离，B,N
+                inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
+                cut_loss = cut_loss + inter_loss # B
+            elif self.loss_type == "no":
+                cut_loss = 0
             if i < len(out_attn_masks) - 1:
                 del out_attns[i], out_attn_masks[i]
+        
         
         # classification loss
         cls_loss = self.base_criterion(cls_s, labels)
@@ -229,7 +244,8 @@ class DistillDiffPruningLoss(torch.nn.Module):
             self.cls_loss += cls_loss.item()
             self.cls_distill_loss += cls_kl_loss.item()
             self.token_distill_loss += token_kl_loss.item()
-            self.cut_loss += cut_loss.item()
+            if self.loss_type != "no":
+                self.cut_loss += cut_loss.item()
             self.count += 1
             if self.count == 100:
                 print('loss info: cls_loss=%.4f, cls_kl=%.4f, token_kl=%.4f, cut_loss=%.4f' % (self.cls_loss / 100, self.cls_distill_loss/ 100, self.token_distill_loss/ 100, self.cut_loss/100))
