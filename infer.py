@@ -169,12 +169,12 @@ def accuracy(output, target, topk=(1,)):
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
-
+        
         res = []
         for k in topk:
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
-        return res
+        return res, correct[0]
 
 def validate(val_loader, model, criterion):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -191,6 +191,7 @@ def validate(val_loader, model, criterion):
 
     with torch.no_grad():
         end = time.time()
+        wrong_list = []
         for i, (images, target) in enumerate(val_loader):
             images = images.cuda()
             target = target.cuda()
@@ -200,7 +201,13 @@ def validate(val_loader, model, criterion):
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            acc, correct = accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = acc
+            
+            for idx in range(len(correct)):
+                if not correct[idx]:
+                    wrong_list.append(i*(images.shape[0]-1)+idx)
+            
             losses.update(loss.item(), images.size(0))
             top1.update(acc1[0], images.size(0))
             top5.update(acc5[0], images.size(0))
@@ -211,11 +218,17 @@ def validate(val_loader, model, criterion):
 
             if i % 20 == 0:
                 progress.display(i)
+                
+            if i > 100:
+                break
 
         # TODO: this should also be done with the ProgressMeter
         print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
               .format(top1=top1, top5=top5))
-
+    
+    with open("wronglist.txt", "w") as fp:
+        fp.write(str(wrong_list))
+        
     return top1.avg
 
 if __name__ == '__main__':
