@@ -149,19 +149,39 @@ class Attention(nn.Module):
         return attn.softmax(-1), top_attn
         
     def forward(self, x, num_keep_node = None, test = False):
+        if test == True:
+            with torch.no_grad():
+                B, N, C = x.shape
+                q = F.linear(x[:,0:1,:], self.qkv.weight[0:C, :], self.qkv.bias[0:C] if self.qkv.bias is not None else None) # q_cls
+                k = F.linear(x, self.qkv.weight[C:2*C, :], self.qkv.bias[C:2*C] if self.qkv.bias is not None else None) # k_all
+                attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # attn_cls
+                
+                top_attns = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+                cls_attn = torch.zeros(B, 1, dtype = top_attns.dtype, device = top_attns.device) # B, 1
+                top_attns = torch.cat([cls_attn, top_attns + 1], dim = 1) # B, K+1
+                
+                x = batch_index_select(x, top_attns)
+                k = batch_index_select(k, top_attns)
+                
+                N = num_keep_node+1
+                q = F.linear(x, self.qkv.weight[0:C, :], self.qkv.bias[0:C] if self.qkv.bias is not None else None).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
+                v = F.linear(x, self.qkv.weight[2*C:3*C, :], self.qkv.bias[2*C:3*C] if self.qkv.bias is not None else None).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
+                
+                attn = (q @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1)) * self.scale
+                attn = attn.softmax(dim = -1)
+                x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+                x = self.proj(x)
+                x = self.proj_drop(x)
+                return x, top_attns
+        
+        
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
         # trick here to make q@k.t more stable
-        attn = ((q * self.scale) @ k.transpose(-2, -1))
-        
-        if test == True:
-            top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-            cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
-            top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
-            return top_attn
-            
+        attn = ((q * self.scale) @ k.transpose(-2, -1)) 
+           
         if num_keep_node is None:
             attn = attn.softmax(dim=-1)
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -205,15 +225,15 @@ class Block(nn.Module):
 
     def forward(self, x, num_keep_node = None, test = False):
         if test == True:
-            B, N, C = x.shape
-            top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True)
-            top_tokens = batch_index_select(x, top_attns)
-            top_tokens = top_tokens + self.drop_path(self.attn(self.norm1(top_tokens)))/self.skip_lam
-            top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))/self.skip_lam
-            index = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
-            top_attns = torch.stack((index, top_attns.reshape(-1))) # 2, B*(N*ratio+1)
-            x[top_attns.cpu().numpy()] = top_tokens.reshape(B*(num_keep_node+1), -1)
-            return x
+            with torch.no_grad():
+                B, N, C = x.shape
+                top_tokens, top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True) 
+                top_tokens = top_tokens/self.skip_lam
+                top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))/self.skip_lam
+                dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
+                dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
+                x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
+                return x
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node)
             x = x + self.drop_path(tmp)/self.skip_lam * attn_mask
