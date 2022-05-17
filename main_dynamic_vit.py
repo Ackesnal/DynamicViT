@@ -566,7 +566,7 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-def speed_test(model, ntest=100, batchsize=64, x=None, **kwargs):
+def speed_test(model, ntest=1000, batchsize=128, x=None, **kwargs):
     if x is None:
         x = torch.rand(batchsize, 3, 224, 224).cuda()
     else:
