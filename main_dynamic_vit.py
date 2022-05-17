@@ -172,8 +172,8 @@ def get_args_parser():
     parser.add_argument('--base_rate', type=float, default=0.7)
     
     parser.add_argument('--loss_type', default="both")
-    parser.add_argument('--test_speed', default=False)
-    parser.add_argument('--only_test_speed', default=False)
+    parser.add_argument('--test_speed', action='store_true', help='whether to measure throughput of model')
+    parser.add_argument('--only_test_speed', action='store_true', help='only measure throughput of model')
 
     return parser
 
