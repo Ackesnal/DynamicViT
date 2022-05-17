@@ -164,7 +164,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         self.distill_weight = distill_weight
         
         self.cut_loss = 0
-        self.cut_weight = 50.0
+        self.cut_weight = 20.0
         self.loss_type = loss
         
 
@@ -204,7 +204,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
                 cut_loss = cut_loss + intra_loss # B
             elif self.loss_type == "inter":
                 diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
-                diffcut[:,:,0] - 0.0
+                diffcut[:,:,0] = 0.0
                 # cut
                 inter_dist = (diffcut.reshape(B,N,N)*W).sum(-1) # 组间距离，B,N
                 inter_loss = F.mse_loss(inter_dist, torch.zeros(B, N, dtype=inter_dist.dtype, device=inter_dist.device))
