@@ -177,7 +177,25 @@ def get_args_parser():
 
     return parser
 
+def speed_test(model, ntest=1000, batchsize=128, x=None, **kwargs):
+    if x is None:
+        x = torch.rand(batchsize, 3, 224, 224).cuda()
+    else:
+        batchsize = x.shape[0]
+    model.eval()
 
+    start = time.time()
+    for i in range(ntest):
+        model(x, **kwargs)
+    torch.cuda.synchronize()
+    end = time.time()
+
+    elapse = end - start
+    speed = batchsize * ntest / elapse
+    # speed = torch.tensor(speed, device=x.device)
+    # torch.distributed.broadcast(speed, src=0, async_op=False)
+    # speed = speed.item()
+    return speed
 
 def get_param_groups(model, weight_decay):
     decay = []
@@ -585,23 +603,6 @@ if __name__ == '__main__':
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
+
     
-def speed_test(model, ntest=1000, batchsize=128, x=None, **kwargs):
-    if x is None:
-        x = torch.rand(batchsize, 3, 224, 224).cuda()
-    else:
-        batchsize = x.shape[0]
-    model.eval()
 
-    start = time.time()
-    for i in range(ntest):
-        model(x, **kwargs)
-    torch.cuda.synchronize()
-    end = time.time()
-
-    elapse = end - start
-    speed = batchsize * ntest / elapse
-    # speed = torch.tensor(speed, device=x.device)
-    # torch.distributed.broadcast(speed, src=0, async_op=False)
-    # speed = speed.item()
-    return speed
