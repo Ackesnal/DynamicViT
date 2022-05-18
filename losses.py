@@ -189,6 +189,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
             
             if self.loss_type == "both":
                 diffcut = torch.abs(mask.reshape(B,N,1) - mask.reshape(B,1,N)) # B,N,N
+                diffcut[:,:,0] = 0.0
                 samecut = mask.reshape(B,N,1) * mask.reshape(B,1,N) # B,N,N
                 # cut
                 inter_dist = (diffcut.reshape(B,N,N)*W).sum(-1) # 组间距离，B,N
