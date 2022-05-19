@@ -192,7 +192,7 @@ class Attention(nn.Module):
                 attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # attn_cls
                 
                 top_attns = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
-                cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
+                cls_attn = torch.zeros(B, 1, dtype = top_attns.dtype, device = top_attns.device) # B, 1
                 top_attns = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
                 
                 x = batch_index_select(x, top_attns)
@@ -207,7 +207,7 @@ class Attention(nn.Module):
                 x = (attn @ v).transpose(1, 2).reshape(B, N, C)
                 x = self.proj(x)
                 x = self.proj_drop(x)
-                return x, top_attn
+                return x, top_attns
         
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
