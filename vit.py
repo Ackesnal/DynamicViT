@@ -169,7 +169,7 @@ class Attention(nn.Module):
         B, H, N, N = attn.shape
         a = np.repeat(np.arange(0,N).reshape(1,N), B, axis = 0)
         np.random.shuffle(a.T)
-        top_attns = torch.tensor(a, requires_grad = False)[:, :num_keep_node] # B, K
+        top_attn = torch.tensor(a, requires_grad = False, device = attn.device)[:, :num_keep_node] # B, K
         cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
         top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
         
@@ -190,7 +190,7 @@ class Attention(nn.Module):
                 B, N, C = x.shape
                 a = np.repeat(np.arange(0,N).reshape(1,N), B, axis = 0)
                 np.random.shuffle(a.T)
-                top_attns = torch.tensor(a, requires_grad = False)[:, :num_keep_node] # B, K
+                top_attns = torch.tensor(a, requires_grad = False, device = x.device)[:, :num_keep_node] # B, K
                 cls_attn = torch.zeros(B, 1, dtype = top_attns.dtype, device = top_attns.device) # B, 1
                 top_attns = torch.cat([cls_attn, top_attns + 1], dim = 1) # B, K+1
                 
