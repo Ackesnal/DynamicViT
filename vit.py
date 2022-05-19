@@ -186,10 +186,10 @@ class Attention(nn.Module):
     def forward(self, x, num_keep_node = None, test = False):
         if test == True:
             with torch.no_grad():
-                print(self.qkv.weight.shape)
                 B, N, C = x.shape
                 q = F.linear(x[:,0:1,:], self.qkv.weight[0:C, :], self.qkv.bias[0:C]) # q_cls
                 k = F.linear(x, self.qkv.weight[C:2*C, :], self.qkv.bias[C:2*C]) # k_all
+                
                 attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # attn_cls
                 
                 top_attns = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
@@ -199,7 +199,7 @@ class Attention(nn.Module):
                 x = batch_index_select(x, top_attns)
                 k = batch_index_select(k, top_attns)
                 
-                N = num_keep_node+1
+                N = num_keep_node + 1
                 q = F.linear(x, self.qkv.weight[0:C, :], self.qkv.bias[0:C]).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
                 v = F.linear(x, self.qkv.weight[2*C:3*C, :], self.qkv.bias[2*C:3*C]).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
                 
@@ -258,11 +258,12 @@ class Block(nn.Module):
         if test == True:
             with torch.no_grad():
                 B, N, C = x.shape
-                top_tokens, top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True) 
+                top_tokens, top_attns = self.attn(self.norm1(x), num_keep_node = num_keep_node, test = True)
+                top_tokens = batch_index_select(x, top_attns) + self.drop_path(top_tokens)
                 top_tokens = top_tokens + self.drop_path(self.mlp(self.norm2(top_tokens)))
                 dim1 = torch.arange(B, dtype=top_attns.dtype, device=top_attns.device).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1)
                 dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
-                x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), -1)
+                x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), C)
                 return x
             
         if num_keep_node is not None:
@@ -463,7 +464,10 @@ class VisionTransformerDiffPruning(nn.Module):
                     x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
                 p_count = p_count + 1
             else:
-                x = checkpoint.checkpoint(blk, x)
+                if self.training:
+                    x = checkpoint.checkpoint(blk, x)
+                else:
+                    x = blk(x)
         
         x = self.norm(x)
         x = x[:, 0]
