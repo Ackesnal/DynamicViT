@@ -167,8 +167,9 @@ class Attention(nn.Module):
 
     def softmax_with_top_attn(self, attn, num_keep_node):
         B, H, N, N = attn.shape
-        
-        top_attn = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+        a = np.repeat(np.arange(0,N).reshape(1,N), B, axis = 0)
+        np.random.shuffle(a.T)
+        top_attns = torch.tensor(a, requires_grad = False)[:, :num_keep_node] # B, K
         cls_attn = torch.zeros(B, 1, dtype = top_attn.dtype, device = top_attn.device) # B, 1
         top_attn = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
         
@@ -187,12 +188,9 @@ class Attention(nn.Module):
         if test == True:
             with torch.no_grad():
                 B, N, C = x.shape
-                q = F.linear(x[:,0:1,:], self.qkv.weight[0:C, :], self.qkv.bias[0:C]) # q_cls
-                k = F.linear(x, self.qkv.weight[C:2*C, :], self.qkv.bias[C:2*C]) # k_all
-                
-                attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # attn_cls
-                
-                top_attns = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
+                a = np.repeat(np.arange(0,N).reshape(1,N), B, axis = 0)
+                np.random.shuffle(a.T)
+                top_attns = torch.tensor(a, requires_grad = False)[:, :num_keep_node] # B, K
                 cls_attn = torch.zeros(B, 1, dtype = top_attns.dtype, device = top_attns.device) # B, 1
                 top_attns = torch.cat([cls_attn, top_attns + 1], dim = 1) # B, K+1
                 
