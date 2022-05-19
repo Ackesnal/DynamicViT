@@ -186,6 +186,7 @@ class Attention(nn.Module):
     def forward(self, x, num_keep_node = None, test = False):
         if test == True:
             with torch.no_grad():
+                print(self.qkv.weight.shape)
                 B, N, C = x.shape
                 q = F.linear(x[:,0:1,:], self.qkv.weight[0:C, :], self.qkv.bias[0:C]) # q_cls
                 k = F.linear(x, self.qkv.weight[C:2*C, :], self.qkv.bias[C:2*C]) # k_all
