@@ -193,7 +193,7 @@ class Attention(nn.Module):
                 
                 top_attns = torch.argsort(attn.mean(1)[:,0,1:], dim = 1, descending=True)[:, :num_keep_node] # B, K
                 cls_attn = torch.zeros(B, 1, dtype = top_attns.dtype, device = top_attns.device) # B, 1
-                top_attns = torch.cat([cls_attn, top_attn + 1], dim = 1) # B, K+1
+                top_attns = torch.cat([cls_attn, top_attns + 1], dim = 1) # B, K+1
                 
                 x = batch_index_select(x, top_attns)
                 k = batch_index_select(k, top_attns)
