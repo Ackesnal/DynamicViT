@@ -290,7 +290,6 @@ def main(args):
     KEEP_RATE = [base_rate, base_rate ** 2, base_rate ** 3]
 
     if args.arch == 'deit_small':
-        # PRUNING_LOC = [3,6,9]
         PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
         KEEP_RATE = []
         for i in range(3):
@@ -314,6 +313,33 @@ def main(args):
             print('## Distillation Pruning Mode')
             model_t = VisionTransformerTeacher(
                 patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True
+            )
+            model_t.load_state_dict(ckpt, strict=True)
+            model_t.to(device)
+            print('sucessfully loaded from pre-trained weights for the teach model')
+    if args.arch == 'deit_base':
+        PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
+        KEEP_RATE = []
+        for i in range(3):
+            KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
+        print(f"Creating model: {args.arch}")
+        print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
+        model = VisionTransformer(
+            patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE, distill=args.distill)
+        model_path = './deit_base_patch16_224-b5f2ef4d.pth'
+        checkpoint = torch.load(model_path, map_location="cpu")
+        ckpt = checkpoint_filter_fn(checkpoint, model)
+        model.default_cfg = _cfg()
+        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+        print('# missing keys=', missing_keys)
+        print('# unexpected keys=', unexpected_keys)
+        print('sucessfully loaded from pre-trained weights:', model_path)
+
+        if args.distill:
+            print('## Distillation Pruning Mode')
+            model_t = VisionTransformerTeacher(
+                patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True
             )
             model_t.load_state_dict(ckpt, strict=True)
             model_t.to(device)
