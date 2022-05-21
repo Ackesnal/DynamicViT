@@ -324,7 +324,7 @@ def main(args):
             KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
-        model = VisionTransformer(
+        model = VisionTransformerDiffPruning(
             patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
             pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE, distill=args.distill)
         model_path = './deit_base_patch16_224-b5f2ef4d.pth'
