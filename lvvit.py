@@ -152,8 +152,8 @@ class Attention(nn.Module):
         if test == True:
             with torch.no_grad():
                 B, N, C = x.shape
-                q = F.linear(x[:,0:1,:], self.qkv.weight[0:C, :], self.qkv.bias[0:C]) # q_cls
-                k = F.linear(x, self.qkv.weight[C:2*C, :], self.qkv.bias[C:2*C]) # k_all
+                q = F.linear(x[:,0:1,:], self.qkv.weight[0:C, :], self.qkv.bias[0:C] if self.qkv.bias!= None else None) # q_cls
+                k = F.linear(x, self.qkv.weight[C:2*C, :], self.qkv.bias[C:2*C] if self.qkv.bias!= None else None) # k_all
                 
                 attn = q.reshape(B, 1, self.num_heads, C // self.num_heads).permute(0,2,1,3) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1) # attn_cls
                 
@@ -165,8 +165,8 @@ class Attention(nn.Module):
                 k = batch_index_select(k, top_attns)
                 
                 N = num_keep_node + 1
-                q = F.linear(x, self.qkv.weight[0:C, :], self.qkv.bias[0:C]).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
-                v = F.linear(x, self.qkv.weight[2*C:3*C, :], self.qkv.bias[2*C:3*C]).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
+                q = F.linear(x, self.qkv.weight[0:C, :], self.qkv.bias[0:C] if self.qkv.bias!= None else None).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
+                v = F.linear(x, self.qkv.weight[2*C:3*C, :], self.qkv.bias[2*C:3*C] if self.qkv.bias!= None else None).reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,1,3)
                 
                 attn = (q * self.scale) @ k.reshape(B, N, self.num_heads, C // self.num_heads).permute(0,2,3,1)
                 attn = attn.softmax(dim = -1)
