@@ -175,8 +175,8 @@ class Attention(nn.Module):
         attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
         dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
         dim2 = top_attn.reshape(-1) # B*(K+1)
-        attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
-        attn_mask = attn_mask * (-100000.0) # 降低attn的比重
+        attn_mask[dim1, dim2] = 0.0 
+        attn_mask = attn_mask * (-100000.0) # add a very small value to the idle tokens so that after softmax they will be close to 0
         attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
         
         attn = attn + attn_mask
@@ -210,33 +210,36 @@ class Attention(nn.Module):
                 x = self.proj_drop(x)
                 return x, top_attns
         
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-            
-        if num_keep_node is None:
-            attn = attn.softmax(dim=-1)
-            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-            return x
         else:
-            attn_rt = attn # B,H,N,N
-            attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
-            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-            
-            # generate the top attn mask
-            attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
-            dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
-            dim2 = top_attn.reshape(-1) # B*(K+1)
-            attn_mask[dim1, dim2] = 1.0
-            attn_mask = attn_mask.reshape(B,N,1)
-            attn_mask.requires_grad = False
-            
+            B, N, C = x.shape
+            qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+    
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+                
+            if num_keep_node is None:
+                # no idle tokens
+                attn = attn.softmax(dim=-1)
+                x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+                x = self.proj(x)
+                x = self.proj_drop(x)
+                return x
+            else:
+                # with idle tokens
+                attn_rt = attn # B,H,N,N
+                attn, top_attn = self.softmax_with_top_attn(attn, num_keep_node)
+                x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+                x = self.proj(x)
+                x = self.proj_drop(x)
+                
+                # generate the top token mask
+                attn_mask = torch.zeros((B, N), dtype = attn.dtype, device = attn.device)  # B, N
+                dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
+                dim2 = top_attn.reshape(-1) # B*(K+1)
+                attn_mask[dim1, dim2] = 1.0
+                attn_mask = attn_mask.reshape(B,N,1)
+                attn_mask.requires_grad = False
+                
             return x, attn_mask, attn_rt
 
 
@@ -265,7 +268,6 @@ class Block(nn.Module):
                 dim2 = top_attns.reshape(-1) # B*(N*ratio+1)
                 x[dim1, dim2] = top_tokens.reshape(B*(num_keep_node+1), C)
                 return x
-            
         if num_keep_node is not None:
             tmp, attn_mask, attn = self.attn(self.norm1(x), num_keep_node = num_keep_node)
             x = x + self.drop_path(tmp) * attn_mask
@@ -340,7 +342,7 @@ class HybridEmbed(nn.Module):
         x = self.proj(x).flatten(2).transpose(1, 2)
         return x
 
-class VisionTransformerDiffPruning(nn.Module):
+class IdleVisionTransformer(nn.Module):
     """ Vision Transformer
 
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
@@ -349,7 +351,7 @@ class VisionTransformerDiffPruning(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., hybrid_backbone=None, norm_layer=None, 
-                 pruning_loc=None, token_ratio=None, distill=False):
+                 idle_layers=None, keep_ratios=None, distill=False):
         """
         Args:
             img_size (int, tuple): input image size
@@ -411,8 +413,8 @@ class VisionTransformerDiffPruning(nn.Module):
 
         self.distill = distill
 
-        self.pruning_loc = pruning_loc
-        self.token_ratio = token_ratio
+        self.idle_layers = idle_layers
+        self.keep_ratios = keep_ratios
         
         trunc_normal_(self.pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
@@ -453,16 +455,15 @@ class VisionTransformerDiffPruning(nn.Module):
         out_features = []
         init_n = x.shape[1] - 1
         for i, blk in enumerate(self.blocks):
-            if i in self.pruning_loc:
+            if i in self.idle_layers:
+                num_keep_node = int(init_n * self.keep_ratios[p_count])
+                p_count = p_count + 1
                 if self.training:
-                    num_keep_node = int(init_n * self.token_ratio[p_count])
                     x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node) # x: B,(N+1),C  attn: B,N,1 
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                 else:
-                    num_keep_node = int(init_n * self.token_ratio[p_count])
                     x = blk(x, num_keep_node = num_keep_node, test = True) # x: B,(N+1),C  attn: B,N,1 
-                p_count = p_count + 1
             else:
                 if self.training:
                     x = checkpoint.checkpoint(blk, x)
@@ -483,7 +484,7 @@ class VisionTransformerDiffPruning(nn.Module):
         else:
             return x
 
-class VisionTransformerTeacher(nn.Module):
+class VisionTransformer(nn.Module):
     """ Vision Transformer
 
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -

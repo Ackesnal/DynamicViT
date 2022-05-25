@@ -140,8 +140,8 @@ class Attention(nn.Module):
         attn_mask = torch.ones((B, N), dtype=attn.dtype, device=attn.device)  # B, N
         dim1 = torch.arange(B, dtype = top_attn.dtype).reshape(-1,1).expand(B, num_keep_node+1).reshape(-1) # B*(K+1)
         dim2 = top_attn.reshape(-1) # B*(K+1)
-        attn_mask[dim1, dim2] = 0.0 # 使得要做attn的位置为0
-        attn_mask = attn_mask * (-100000.0) # 降低attn的比重
+        attn_mask[dim1, dim2] = 0.0 
+        attn_mask = attn_mask * (-100000.0) # add a very small value to the idle tokens so that after softmax they will be close to 0
         attn_mask = attn_mask.reshape(B, 1, 1, N).expand(-1, H, N, -1) # B, H, N, N
         
         attn = attn + attn_mask
@@ -556,7 +556,7 @@ def get_dpr(drop_path_rate,depth,drop_path_decay='linear'):
         dpr=drop_path_rate
     return dpr
 
-class LVViTDiffPruning(nn.Module):
+class IdleLVViT(nn.Module):
     """ Vision Transformer with tricks
     Arguements:
         p_emb: different conv based position embedding (default: 4 layer conv)
@@ -672,21 +672,23 @@ class LVViTDiffPruning(nn.Module):
             decisions = [[] for _ in self.pruning_loc]
         for i, blk in enumerate(self.blocks):
             if i in self.pruning_loc:
+                num_keep_node = int(init_n * self.token_ratio[p_count])
+                p_count = p_count + 1
                 if self.training:
-                    num_keep_node = int(init_n * self.token_ratio[p_count])
-                    # x, attn_mask, attn = blk(x, num_keep_node = num_keep_node)
                     x, attn_mask, attn = checkpoint.checkpoint(blk, x, num_keep_node)
                     out_attn_masks.append(attn_mask)
                     out_attns.append(attn)
                 else:
                     num_keep_node = int(init_n * self.token_ratio[p_count])
                     x = blk(x, num_keep_node, True) # x: B,(N+1),C  attn: B,N,1 
-                p_count = p_count + 1
             else:
-                x = checkpoint.checkpoint(blk, x)
+                if self.training:
+                    x = checkpoint.checkpoint(blk, x)
+                else:
+                    x = blk(x)
         
         x = self.norm(x)
-        if self.distill:
+        if self.training and self.distill:
             feature = x
         x_cls = self.head(x[:,0])
         x_aux = self.aux_head(x[:,1:])
@@ -703,7 +705,7 @@ class LVViTDiffPruning(nn.Module):
             else:
                 return final_pred
 
-class LVViT_Teacher(nn.Module):
+class LVViT(nn.Module):
     """ Vision Transformer with tricks
     Arguements:
         p_emb: different conv based position embedding (default: 4 layer conv)

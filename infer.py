@@ -25,8 +25,8 @@ from samplers import RASampler
 from functools import partial
 
 
-from vit import VisionTransformerDiffPruning
-from lvvit import LVViTDiffPruning
+from vit import IdleVisionTransformer
+from lvvit import IdleLVViT
 
 
 def get_args_parser():
@@ -67,55 +67,52 @@ def main(args):
         drop_last=False
     )
 
-    base_rate = args.base_rate
-    KEEP_RATE = [base_rate, base_rate ** 2, base_rate ** 3]
-
     if args.arch == 'deit_small':
-        PRUNING_LOC = [3,6,9] 
-        PRUNING_LOC = [i for i in range(3,12)] # 每层都加一个predictor
-        KEEP_RATE = []
-        for i in range(3):
-            KEEP_RATE.extend([base_rate**(i+1) for _ in range(3)])
+        # IdleViT configs
+        idle_layers = [i for i in range(3,12)] # layers using the IdleViT module
+        keep_ratios = [args.base_rate**(i+1) for i in range(3) for _ in range(3)] # the keep ratios for each layer
         print(f"Creating model: {args.arch}")
-        print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
-        model = VisionTransformerDiffPruning(
-            patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True, 
-            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE
-            )
-    elif args.arch == 'deit_256':
-        PRUNING_LOC = [3,6,9] 
+        print('Keep_ratio =', keep_ratios, 'at layer', idle_layers)
+        
+        # Load pre-trained model
+        model = IdleVisionTransformer(patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True, 
+                                      idle_layers=idle_layers, keep_ratios=keep_ratios)
+        model_path = './deit_small_patch16_224-cd65a155.pth'
+            
+    elif args.arch == 'deit_base':
+        # IdleViT configs
+        idle_layers = [i for i in range(3,12)] # layers using the IdleViT module
+        keep_ratios = [args.base_rate**(i+1) for i in range(3) for _ in range(3)] # the keep ratios for each layer
         print(f"Creating model: {args.arch}")
-        print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
-        model = VisionTransformerDiffPruning(
-            patch_size=16, embed_dim=256, depth=12, num_heads=4, mlp_ratio=4, qkv_bias=True, 
-            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE
-            )
+        print('Keep_ratio =', keep_ratios, 'at layer', idle_layers)
+        
+        # Load pre-trained model
+        model = IdleVisionTransformer(patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True, 
+                                      idle_layers=idle_layers, keep_ratios=keep_ratios)
+
     elif args.arch == 'lvvit_s':
-        PRUNING_LOC = [4,8,12] 
-        PRUNING_LOC = [i for i in range(4,16)] # 每层都加一个predictor
-        KEEP_RATE = []
-        for i in range(3):
-            KEEP_RATE.extend([base_rate**(i+1) for _ in range(4)])
+        # IdleViT configs
+        idle_layers = [i for i in range(4,16)] # layers using the IdleViT module
+        keep_ratios = [args.base_rate**(i+1) for i in range(3) for _ in range(4)] # the keep ratios for each layer
         print(f"Creating model: {args.arch}")
-        print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
-        model = LVViTDiffPruning(
-            patch_size=16, embed_dim=384, depth=16, num_heads=6, mlp_ratio=3.,
-            p_emb='4_2',skip_lam=2., return_dense=True,mix_token=True,
-            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE
-        )
+        print('Keep_ratio =', keep_ratios, 'at layer', idle_layers)
+        
+        # Load pre-trained model
+        model = IdleLVViT(patch_size=16, embed_dim=384, depth=16, num_heads=6, mlp_ratio=3.,
+                          p_emb='4_2',skip_lam=2., return_dense=True, mix_token=True,
+                          idle_layers=idle_layers, keep_ratios=keep_ratios)
+            
     elif args.arch == 'lvvit_m':
-        PRUNING_LOC = [5,10,15] 
-        PRUNING_LOC = [i for i in range(5,20)] # 每层都加一个predictor
-        KEEP_RATE = []
-        for i in range(3):
-            KEEP_RATE.extend([base_rate**(i+1) for _ in range(5)])
+        # IdleViT configs
+        idle_layers = [i for i in range(5,20)] # layers using the IdleViT module
+        keep_ratios = [args.base_rate**(i+1) for i in range(3) for _ in range(5)] # the keep ratios for each layer
         print(f"Creating model: {args.arch}")
-        print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
-        model = LVViTDiffPruning(
-            patch_size=16, embed_dim=512, depth=20, num_heads=8, mlp_ratio=3.,
-            p_emb='4_2',skip_lam=2., return_dense=True,mix_token=True,
-            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE
-        )
+        print('Keep_ratio =', keep_ratios, 'at layer', idle_layers)
+        
+        # Load pre-trained model
+        model = LVViT(patch_size=16, embed_dim=512, depth=20, num_heads=8, mlp_ratio=3.,
+                      p_emb='4_2',skip_lam=2., return_dense=True,mix_token=True,
+                      idle_layers=idle_layers, keep_ratios=keep_ratios)
     else:
         raise NotImplementedError
 
