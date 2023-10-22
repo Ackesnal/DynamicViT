@@ -17,7 +17,7 @@ import utils
 import random
 
 
-def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
+def train_one_epoch(model: torch.nn.Module, wtwt, args, criterion: DistillationLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
@@ -37,6 +37,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
 
         with torch.cuda.amp.autocast():
             outputs = model(samples)
+            if args.mydistill == 'kdnoprojattention' and epoch > 4:
+                pred, token_pred, mask, out_pred_score = outputs
+                pred = torch.mm(pred, wtwt.T)
+                outputs = [pred, token_pred, mask, out_pred_score]                
             loss = criterion(samples, outputs, targets)
 
         loss_value = loss.item()
@@ -65,7 +69,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
+def evaluate(data_loader, model, wtwt, args, device, epoch):
     criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -81,6 +85,8 @@ def evaluate(data_loader, model, device):
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
+            if args.mydistill == 'kdnoprojattention' and epoch > 4:
+                output = torch.mm(output, wtwt.T)
             loss = criterion(output, target)
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
