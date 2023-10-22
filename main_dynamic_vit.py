@@ -33,6 +33,9 @@ def get_args_parser():
     parser.add_argument('--batch-size', default=64, type=int)
     parser.add_argument('--epochs', default=300, type=int)
 
+    # KD + Attention
+    parser.add_argument('--mydistill', type=str, default='kdnoproj', choices=['kdnoproj', 'kdnoprojattention' ])
+    
     # Model parameters
     parser.add_argument('--test_speed', action='store_true', help='whether to measure throughput of model')
     parser.add_argument('--only_test_speed', action='store_true', help='only measure throughput of model')
@@ -198,7 +201,20 @@ def get_param_groups(model, weight_decay):
         {'params': decay, 'weight_decay': weight_decay, 'name': 'base_decay'}
         ]
 
-
+def knngraph(w_t):
+    # L2 graph of teacher 
+    wtwt = torch.zeros(w_t.size(0), w_t.size(0)).cuda()
+    with torch.no_grad():          
+        for i in range(0, w_t.size(0)):
+            reference_point = w_t[i]
+            distances = torch.norm(w_t - reference_point, dim=1)            
+            sorted_indices = torch.argsort(distances)
+            top_indices = sorted_indices[:5]
+            wtwt[i,top_indices] = 1
+        wtwt = wtwt / wtwt.sum(1)
+        wtwt = wtwt + torch.eye(w_t.size(0)).cuda()  
+    return wtwt
+    
 def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_up_step=2, warmup_predictor=False, base_multi=0.1):
     cos_lr = (math.cos(step / max_step * math.pi) + 1) * 0.5
     cos_lr = min_lr + cos_lr * (init_lr - min_lr)
@@ -505,6 +521,14 @@ def main(args):
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
+    wtwt = torch.eye(1000).cuda()
+    if args.mydistill == 'kdnoprojattention':
+        model_t.eval()
+        im_t = torch.eye(384).cuda()
+        with torch.no_grad():
+            w_t = model_t.head(im_t)
+            wtwt = knngraph(w_t.T)
+            
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
@@ -516,7 +540,7 @@ def main(args):
         adjust_learning_rate(optimizer.param_groups, args.lr, args.min_lr, epoch, args.epochs, warmup_predictor=False, warming_up_step=warmup_step, base_multi=0.1)
 
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
+            model, wtwt, args, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.finetune == '' # keep in eval mode during finetuning
@@ -536,7 +560,7 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, wtwt, args, device, epoch)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         max_accuracy = max(max_accuracy, test_stats["acc1"])
         print(f'Max accuracy: {max_accuracy:.2f}%')
