@@ -37,7 +37,7 @@ def train_one_epoch(model: torch.nn.Module, wtwt, args, criterion: DistillationL
 
         with torch.cuda.amp.autocast():
             outputs = model(samples)
-            if args.mydistill == 'kdnoprojattention' and epoch > 4:
+            if "Attention" in args.mydistill and epoch > 4:
                 pred, token_pred, mask, out_pred_score = outputs
                 pred = torch.mm(pred, wtwt.T)
                 outputs = [pred, token_pred, mask, out_pred_score]                
@@ -85,7 +85,7 @@ def evaluate(data_loader, model, wtwt, args, device, epoch):
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
-            if args.mydistill == 'kdnoprojattention' and epoch > 4:
+            if "Attention" in args.mydistill and epoch > 4:
                 output = torch.mm(output, wtwt.T)
             loss = criterion(output, target)
 

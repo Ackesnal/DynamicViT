@@ -34,7 +34,7 @@ def get_args_parser():
     parser.add_argument('--epochs', default=300, type=int)
 
     # KD + Attention
-    parser.add_argument('--mydistill', type=str, default='kdnoproj', choices=['kdnoproj', 'kdnoprojattention' ])
+    parser.add_argument('--mydistill', type=str, default='kdnoproj', choices=['kdNoProj', 'kdNoProjAttention', 'kdNoFeatureNoProj', 'kdNoFeatureNoProjAttention' ])
     
     # Model parameters
     parser.add_argument('--test_speed', action='store_true', help='whether to measure throughput of model')
@@ -477,11 +477,11 @@ def main(args):
     if args.distill:
         if 'lvvit' in args.arch: 
             criterion = DistillDiffPruningLoss(
-                model_t, criterion, clf_weight=1.0, keep_ratio=KEEP_RATE, ratio_weight=args.ratiow, distill_weight=args.distillw
+                model_t, criterion, args, clf_weight=1.0, keep_ratio=KEEP_RATE, ratio_weight=args.ratiow, distill_weight=args.distillw
             )
         else:
             criterion = DistillDiffPruningLoss(
-                model_t, criterion, clf_weight=1.0, keep_ratio=KEEP_RATE, mse_token=True, ratio_weight=args.ratiow, distill_weight=args.distillw
+                model_t, criterion, args, clf_weight=1.0, keep_ratio=KEEP_RATE, mse_token=True, ratio_weight=args.ratiow, distill_weight=args.distillw
             )
     else:
         criterion = DiffPruningLoss(
@@ -522,7 +522,7 @@ def main(args):
         return
 
     wtwt = torch.eye(1000).cuda()
-    if args.mydistill == 'kdnoprojattention':
+    if "Attention" in args.mydistill:
         model_t.eval()
         im_t = torch.eye(384).cuda()
         with torch.no_grad():
