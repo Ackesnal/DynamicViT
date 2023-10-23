@@ -209,7 +209,7 @@ def knngraph(w_t):
             reference_point = w_t[i]
             distances = torch.norm(w_t - reference_point, dim=1)            
             sorted_indices = torch.argsort(distances)
-            top_indices = sorted_indices[:5]
+            top_indices = sorted_indices[:3]
             wtwt[i,top_indices] = 1
         wtwt = wtwt / wtwt.sum(1)
         wtwt = wtwt + torch.eye(w_t.size(0)).cuda()  

@@ -202,7 +202,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         token_pred = token_pred.reshape(B*N, C)
         token_t = token_t.reshape(B*N, C)
         
-        self.featurekd:
+        if self.featurekd:
             if mask.sum() < 0.1:
                 token_kl_loss = token_pred.new(1,).fill_(0.0)
             else:
