@@ -3,3 +3,10 @@ models
 __pycache__
 .ipynb_checkpoints
 .DS_Store
+*_err.txt
+*_out.txt
+checkpoints/
+Existing/
+deit*.pth
+logs/
+log_mop2/
