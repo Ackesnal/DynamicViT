@@ -209,7 +209,7 @@ def knngraph(w_t):
             reference_point = w_t[i]
             distances = torch.norm(w_t - reference_point, dim=1)            
             sorted_indices = torch.argsort(distances)
-            top_indices = sorted_indices[:3]
+            top_indices = sorted_indices[:5]
             wtwt[i,top_indices] = 1
         wtwt = wtwt / wtwt.sum(1)
         wtwt = wtwt + torch.eye(w_t.size(0)).cuda()  
@@ -435,7 +435,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu]) 
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
