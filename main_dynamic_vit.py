@@ -527,11 +527,15 @@ def main(args):
     
     wtwt = torch.eye(1000).cuda()
     if "Attention" in args.mydistill:
-        im_t = torch.eye(384).cuda()
+        if args.arch == 'deit_small' or args.arch == 'lvvit_s':
+            dim = 384
+        else:
+            dim = 512
+        model_t.eval()
+        im_t = torch.eye(dim).cuda()
         with torch.no_grad():
             w_t = model_t.head(im_t)
             wtwt = knngraph(w_t.T)
-            wtwt = torch.eye(1000).cuda()
             
             
     print(f"Start training for {args.epochs} epochs")
