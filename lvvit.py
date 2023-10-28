@@ -9,6 +9,7 @@ from timm.models.layers import DropPath, to_2tuple
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
 
 from timm.models.layers import trunc_normal_
 import numpy as np
@@ -666,7 +667,7 @@ class LVViTDiffPruning(nn.Module):
                     out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
                     cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                     policy = torch.cat([cls_policy, hard_keep_decision], dim=1)
-                    x = blk(x, policy=policy)
+                    x = checkpoint.checkpoint(blk, x, policy)
                     prev_decision = hard_keep_decision
                 else:
                     score = pred_score[:,:,0]
@@ -682,7 +683,7 @@ class LVViTDiffPruning(nn.Module):
                 p_count += 1
             else:
                 if self.training:
-                    x = blk(x, policy)
+                    x = checkpoint.checkpoint(blk, x, policy)
                 else:
                     x = blk(x)
         
