@@ -550,7 +550,7 @@ class LVViTDiffPruning(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., drop_path_decay='linear', hybrid_backbone=None, norm_layer=nn.LayerNorm, p_emb='4_2', head_dim = None,
-                 skip_lam = 1.0,order=None, mix_token=False, return_dense=False, pruning_loc=None, token_ratio=None, distill=False, viz_mode=False):
+                 skip_lam = 1.0,order=None, mix_token=False, return_dense=False, pruning_loc=None, token_ratio=None, distill=False, featurekd=False, viz_mode=False):
         super().__init__()
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -611,6 +611,7 @@ class LVViTDiffPruning(nn.Module):
             assert return_dense, "always return all features when mixtoken is enabled"
 
         self.distill = distill
+        self.featurekd = featurekd
         self.viz_mode = viz_mode
 
         trunc_normal_(self.pos_embed, std=.02)
@@ -694,7 +695,10 @@ class LVViTDiffPruning(nn.Module):
 
         if self.training:
             if self.distill:
-                return x_cls, x_aux, prev_decision.detach(), out_pred_prob
+                if self.featurekd:
+                    return x_cls, x_aux, prev_decision.detach(), out_pred_prob
+                else:
+                    return final_pred, final_pred, prev_decision.detach(), out_pred_prob
             else:
                 return final_pred, out_pred_prob
         else:

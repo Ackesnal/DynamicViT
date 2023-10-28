@@ -185,6 +185,7 @@ class DistillDiffPruningLoss(torch.nn.Module):
         cls_loss = self.base_criterion(pred, labels)
 
         with torch.no_grad():
+            self.teacher_model.eval()
             cls_t, token_t = self.teacher_model(inputs)
 
         cls_kl_loss = F.kl_div(
@@ -194,15 +195,15 @@ class DistillDiffPruningLoss(torch.nn.Module):
                 log_target=True
             )
 
-        B, N, C = token_pred.size()
-        assert mask.numel() == B * N
-
-        bool_mask = mask.reshape(B*N) > 0.5
-
-        token_pred = token_pred.reshape(B*N, C)
-        token_t = token_t.reshape(B*N, C)
         
         if self.featurekd:
+            B, N, C = token_pred.size()
+            assert mask.numel() == B * N
+    
+            bool_mask = mask.reshape(B*N) > 0.5
+            token_pred = token_pred.reshape(B*N, C)
+            token_t = token_t.reshape(B*N, C)
+            
             if mask.sum() < 0.1:
                 token_kl_loss = token_pred.new(1,).fill_(0.0)
             else:

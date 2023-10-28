@@ -34,7 +34,7 @@ def get_args_parser():
     parser.add_argument('--epochs', default=300, type=int)
 
     # KD + Attention
-    parser.add_argument('--mydistill', type=str, default='kdnoproj', choices=['kdNoProj', 'kdNoProjAttention', 'kdNoFeatureNoProj', 'kdNoFeatureNoProjAttention' ])
+    parser.add_argument('--mydistill', type=str, default='kdnoproj', choices=['kdNoProj', 'kdNoProjAttention', 'kdNoFeatureNoProj', 'kdNoFeatureNoProjAttention'])
     
     # Model parameters
     parser.add_argument('--test_speed', action='store_true', help='whether to measure throughput of model')
@@ -215,6 +215,7 @@ def knngraph(w_t):
         wtwt = wtwt + torch.eye(w_t.size(0)).cuda()  
     return wtwt
     
+    
 def adjust_learning_rate(param_groups, init_lr, min_lr, step, max_step, warming_up_step=2, warmup_predictor=False, base_multi=0.1):
     cos_lr = (math.cos(step / max_step * math.pi) + 1) * 0.5
     cos_lr = min_lr + cos_lr * (init_lr - min_lr)
@@ -336,8 +337,9 @@ def main(args):
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
         model = LVViTDiffPruning(
             patch_size=16, embed_dim=384, depth=16, num_heads=6, mlp_ratio=3.,
-            p_emb='4_2',skip_lam=2., return_dense=True,mix_token=True,
-            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE, distill=args.distill
+            p_emb='4_2',skip_lam=2., return_dense=True, mix_token=True,
+            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE, distill=args.distill,
+            featurekd=False if "NoFeature" in args.mydistill else True
         )
         model_path = './lvvit_s-224-83.3.pth.tar'
         checkpoint = torch.load(model_path, map_location="cpu")
@@ -363,7 +365,8 @@ def main(args):
         model = LVViTDiffPruning(
             patch_size=16, embed_dim=512, depth=20, num_heads=8, mlp_ratio=3.,
             p_emb='4_2',skip_lam=2., return_dense=True,mix_token=True,
-            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE, distill=args.distill
+            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE, distill=args.distill,
+            featurekd=False if "NoFeature" in args.mydistill else True
         )
         model_path = './lvvit_m-56M-224-84.0.tar'
         checkpoint = torch.load(model_path, map_location="cpu")
@@ -435,7 +438,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)  
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])#, find_unused_parameters=True)  
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
@@ -520,14 +523,16 @@ def main(args):
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
-
+    
+    
     wtwt = torch.eye(1000).cuda()
     if "Attention" in args.mydistill:
-        model_t.eval()
         im_t = torch.eye(384).cuda()
         with torch.no_grad():
             w_t = model_t.head(im_t)
             wtwt = knngraph(w_t.T)
+            wtwt = torch.eye(1000).cuda()
+            
             
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
