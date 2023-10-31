@@ -698,7 +698,7 @@ class LVViTDiffPruning(nn.Module):
                 if self.featurekd:
                     return x_cls, x_aux, prev_decision.detach(), out_pred_prob
                 else:
-                    return final_pred, final_pred, prev_decision.detach(), out_pred_prob
+                    return x_cls, x_aux, prev_decision.detach(), out_pred_prob # return final_pred, final_pred, prev_decision.detach(), out_pred_prob
             else:
                 return final_pred, out_pred_prob
         else:

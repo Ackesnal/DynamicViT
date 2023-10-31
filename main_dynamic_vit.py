@@ -331,6 +331,31 @@ def main(args):
             model_t.load_state_dict(ckpt, strict=True)
             model_t.to(device)
             print('sucessfully loaded from pre-trained weights for the teach model')
+    if args.arch == 'deit_base':
+        PRUNING_LOC = [3,6,9] 
+        print(f"Creating model: {args.arch}")
+        print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
+        model = VisionTransformerDiffPruning(
+            patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True, 
+            pruning_loc=PRUNING_LOC, token_ratio=KEEP_RATE, distill=args.distill
+            )
+        model_path = './deit_base_patch16_224-b5f2ef4d.pth'
+        checkpoint = torch.load(model_path, map_location="cpu")
+        ckpt = checkpoint_filter_fn(checkpoint, model)
+        model.default_cfg = _cfg()
+        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+        print('# missing keys=', missing_keys)
+        print('# unexpected keys=', unexpected_keys)
+        print('sucessfully loaded from pre-trained weights:', model_path)
+
+        if args.distill:
+            print('## Distillation Pruning Mode')
+            model_t = VisionTransformerTeacher(
+                patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True
+            )
+            model_t.load_state_dict(ckpt, strict=True)
+            model_t.to(device)
+            print('sucessfully loaded from pre-trained weights for the teach model')
     elif args.arch == 'lvvit_s':
         PRUNING_LOC = [4,8,12] 
         print(f"Creating model: {args.arch}")
@@ -529,6 +554,8 @@ def main(args):
     if "Attention" in args.mydistill:
         if args.arch == 'deit_small' or args.arch == 'lvvit_s':
             dim = 384
+        elif args.arch == 'deit_base':
+            dim = 768 
         else:
             dim = 512
         model_t.eval()

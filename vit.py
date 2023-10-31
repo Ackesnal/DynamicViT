@@ -26,6 +26,7 @@ from copy import Error, deepcopy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 
 from utils import batch_index_select
 
@@ -440,7 +441,7 @@ class VisionTransformerDiffPruning(nn.Module):
                     out_pred_prob.append(hard_keep_decision.reshape(B, init_n))
                     cls_policy = torch.ones(B, 1, 1, dtype=hard_keep_decision.dtype, device=hard_keep_decision.device)
                     policy = torch.cat([cls_policy, hard_keep_decision], dim=1)
-                    x = blk(x, policy=policy)
+                    x = checkpoint(blk, x, policy)
                     prev_decision = hard_keep_decision
                 else:
                     score = pred_score[:,:,0]
@@ -454,7 +455,7 @@ class VisionTransformerDiffPruning(nn.Module):
                 p_count += 1
             else:
                 if self.training:
-                    x = blk(x, policy)
+                    x = checkpoint.checkpoint(blk, x, policy)
                 else:
                     x = blk(x)
 
