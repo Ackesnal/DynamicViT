@@ -331,7 +331,7 @@ def main(args):
             model_t.load_state_dict(ckpt, strict=True)
             model_t.to(device)
             print('sucessfully loaded from pre-trained weights for the teach model')
-    if args.arch == 'deit_base':
+    elif args.arch == 'deit_base':
         PRUNING_LOC = [3,6,9] 
         print(f"Creating model: {args.arch}")
         print('token_ratio =', KEEP_RATE, 'at layer', PRUNING_LOC)
